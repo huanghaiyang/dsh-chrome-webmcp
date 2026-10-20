@@ -7,9 +7,13 @@ the task-isolation model, and the broker/channel design.
 ```
 chrome-webmcp-mcp/   installable plugin (bundle patch, bridge, broker, tests, docs)
 webmcp-test.html     demo page registering add_numbers / get_page_title
-*.mjs, *.json        one-off CDP/WebMCP reconnaissance scripts and captures
-.chrome-*/           isolated Chrome profiles (ignored by git)
+dev/probes/          one-off CDP/WebMCP investigation scripts (not shipped)
+dev/evidence/        sanitized protocol captures, Chrome logs, profile proof
+dev/README.md        index and context for the archived investigation
 ```
+
+The plugin has no runtime dependency on `dev/`; that directory is history and
+reference material only. See [`dev/README.md`](dev/README.md) for the per-file index.
 
 ## Quick start
 
@@ -29,11 +33,12 @@ Then in the harness: `mcp__chrome__launch` → `mcp__chrome__status` →
   Run `node chrome-webmcp-mcp/scripts/check-sensitive.mjs` before committing.
 - `.gitignore` excludes Chrome profiles, broker logs/state, test scratch, and
   `.scratch/`.
-- The reconnaissance scripts under this root are development history. Their
-  Chrome logs (`chrome-instance-identity.txt`, `chrome-live.txt`,
-  `chrome-err*.txt`) were sanitized: vendor install paths, extension ids,
-  DevTools instance UUIDs, user names, and absolute paths are replaced with
-  placeholders.
+- The reconnaissance scripts and captures now live under [`dev/`](dev/README.md).
+  Their Chrome logs were sanitized: vendor install paths, extension ids, DevTools
+  instance UUIDs, user names, and absolute paths are replaced with placeholders.
+- `webmcp-test.html` stays at the repository root because the plugin README and the
+  manual verification flow link to it; the maintained automated tests use their own
+  copy under `chrome-webmcp-mcp/test/fixtures/`.
 
 ## License
 

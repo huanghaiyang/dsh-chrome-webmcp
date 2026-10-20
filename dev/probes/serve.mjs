@@ -3,7 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const ROOT = import.meta.dirname; // 脚本所在目录，避免硬编码本机绝对路径
+const ROOT = path.join(import.meta.dirname, '..', '..'); // repo root, where webmcp-test.html lives
 const PORT = Number(process.env.PORT || 8788);
 
 const server = http.createServer((req, res) => {

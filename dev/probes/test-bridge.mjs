@@ -1,10 +1,10 @@
 // In-process test of the bridge tool handlers (no child processes: the file
 // sandbox blocks piped child stdio, so the MCP stdio loop is exercised in-process).
-import { callTool, toolDefinitions, config } from './chrome-webmcp-mcp/bridge.mjs';
+import { callTool, toolDefinitions, config } from '../../chrome-webmcp-mcp/bridge.mjs';
 
 const show = (label, v) => console.log('\n### ' + label + '\n' + JSON.stringify(v, null, 2).slice(0, 2500));
 
-console.log('endpoint:', config.endpoint());
+console.log('broker endpoint:', config.ipc);
 show('tools/list', toolDefinitions().map((t) => t.name));
 
 show('status', await callTool('status'));

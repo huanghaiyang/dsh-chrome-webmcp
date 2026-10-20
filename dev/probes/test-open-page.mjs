@@ -1,4 +1,4 @@
-import { callTool } from './chrome-webmcp-mcp/bridge.mjs';
+import { callTool } from '../../chrome-webmcp-mcp/bridge.mjs';
 
 const pages = await callTool('status');
 console.log('pages before:', pages.pageCount);

@@ -1,7 +1,7 @@
 // Bridge verification on a file:// page (no long-lived server needed).
-import { callTool } from './chrome-webmcp-mcp/bridge.mjs';
+import { callTool } from '../../chrome-webmcp-mcp/bridge.mjs';
 
-const FILE_URL = process.env.TEST_URL || new URL('./webmcp-test.html', import.meta.url).href;
+const FILE_URL = process.env.TEST_URL || new URL('../../webmcp-test.html', import.meta.url).href;
 
 const status = await callTool('status');
 console.log('chrome reachable:', status.chromeReachable, '| webmcpDomain:', status.webmcpDomain, '| pages:', status.pageCount);

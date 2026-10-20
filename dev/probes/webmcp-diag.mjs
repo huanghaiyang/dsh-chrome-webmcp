@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { CDP, version } from './cdp-client.mjs';
 
 const PORT = Number(process.env.CDP_PORT || 9333);
-const TEST_URL = process.env.TEST_URL || new URL('./webmcp-test.html', import.meta.url).href;
+const TEST_URL = process.env.TEST_URL || new URL('../../webmcp-test.html', import.meta.url).href;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const v = await version();
