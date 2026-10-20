@@ -1,0 +1,21 @@
+{
+  "name": "dsh-chrome-webmcp",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH profile bundle: bridges WebMCP tools registered by pages in the local Chrome into the harness as the `chrome` MCP server.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test --experimental-test-isolation=none \"test/*.test.mjs\"",
+    "sanitize": "node scripts/check-sensitive.mjs",
+    "install-plugin": "node install.mjs"
+  }
+}

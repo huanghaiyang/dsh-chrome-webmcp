@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebMCP Test Page</title>
+</head>
+<body>
+<h1 id="h">WebMCP test page</h1>
+<div id="log"></div>
+<script>
+const el = document.getElementById('log');
+function log(m) { el.textContent += m + '\n'; }
+
+(async () => {
+  try {
+    log('location=' + location.href);
+    const mc = document.modelContext || navigator.modelContext;
+    log('document.modelContext = ' + typeof document.modelContext + ' | navigator.modelContext = ' + typeof navigator.modelContext);
+    if (!mc) { log('RESULT: NO MODEL CONTEXT'); return; }
+    window.__mc = mc;
+    const proto = Object.getPrototypeOf(mc);
+    log('proto methods: ' + Object.getOwnPropertyNames(proto).join(','));
+    log('own props: ' + Object.getOwnPropertyNames(mc).join(','));
+
+    const reg = await mc.registerTool({
+      name: 'get_page_title',
+      description: 'Return the title and URL of the current page.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => {
+        log('EXECUTED get_page_title');
+        return { title: document.title, url: location.href, marker: 'webmcp-ok' };
+      },
+    });
+    log('registered get_page_title -> ' + JSON.stringify(reg));
+
+    await mc.registerTool({
+      name: 'add_numbers',
+      description: 'Add two numbers and return the sum.',
+      inputSchema: {
+        type: 'object',
+        properties: { a: { type: 'number', description: 'first addend' }, b: { type: 'number', description: 'second addend' } },
+        required: ['a', 'b'],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        log('EXECUTED add_numbers args=' + JSON.stringify(args));
+        return { sum: Number(args && args.a) + Number(args && args.b) };
+      },
+    });
+    log('registered add_numbers');
+
+    if (typeof mc.getTools === 'function') {
+      const tools = await mc.getTools();
+      log('getTools() -> ' + (tools || []).map((t) => t.name).join('|'));
+    } else {
+      log('getTools is not a function');
+    }
+    log('RESULT: READY');
+    document.title = 'WebMCP Test Page [READY]';
+  } catch (e) {
+    log('RESULT: ERROR ' + (e && e.message ? e.message : String(e)));
+  }
+})();
+</script>
+</body>
+</html>

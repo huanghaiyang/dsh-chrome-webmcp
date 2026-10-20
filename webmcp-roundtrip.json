@@ -1,0 +1,68 @@
+{
+  "targetId": "DAFA28BD3C30287AAB3156D2B0825AD4",
+  "events": [
+    {
+      "method": "WebMCP.toolsAdded",
+      "params": {
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers and return the sum.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "a": {
+                  "type": "number",
+                  "description": "first addend"
+                },
+                "b": {
+                  "type": "number",
+                  "description": "second addend"
+                }
+              },
+              "required": [
+                "a",
+                "b"
+              ],
+              "additionalProperties": false
+            },
+            "frameId": "DAFA28BD3C30287AAB3156D2B0825AD4",
+            "stackTrace": {
+              "callFrames": [
+                {
+                  "functionName": "",
+                  "scriptId": "3",
+                  "url": "http://127.0.0.1:8788/webmcp-test.html",
+                  "lineNumber": 35,
+                  "columnNumber": 13
+                }
+              ]
+            }
+          },
+          {
+            "name": "get_page_title",
+            "description": "Return the title and URL of the current page.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "frameId": "DAFA28BD3C30287AAB3156D2B0825AD4",
+            "stackTrace": {
+              "callFrames": [
+                {
+                  "functionName": "",
+                  "scriptId": "3",
+                  "url": "http://127.0.0.1:8788/webmcp-test.html",
+                  "lineNumber": 24,
+                  "columnNumber": 25
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "sessionId": "49EF14106E51C2A4E42B3EFC3D1AA46E"
+    }
+  ]
+}

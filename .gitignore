@@ -1,0 +1,43 @@
+# ── Chrome profiles and test artifacts ──────────────────────────────────────────
+# Isolated Chrome profiles created by `mcp__chrome__launch` / probe runs (binary
+# caches, cookies and local state — never commit these).
+.chrome-*/
+.chrome-webmcp/
+.chrome-t*/
+dsh-webmcp-chrome/
+**/user-data-dir/
+
+# ── Broker runtime state and logs ───────────────────────────────────────────────
+# The broker writes broker.log / broker-state.json under
+# %LOCALAPPDATA%\dsh-chrome-webmcp by default; keep any local copy out of git.
+.broker/
+broker.log
+broker-state.json
+*.state.json
+*.log
+
+# ── Node ────────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+.yarn-error.log
+
+# ── Test / scratch ──────────────────────────────────────────────────────────────
+test/tmp/
+**/test/tmp/
+.scratch/
+.tmp/
+.tmp-*/
+tmp/
+*.tmp
+coverage/
+.nyc_output/
+
+# ── Editor / OS noise ───────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

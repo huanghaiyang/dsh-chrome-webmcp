@@ -1,0 +1,36 @@
+# chrome-webmcp-mcp — profile patch layer (inserted by the `dsh-chrome-webmcp` bundle).
+#
+# Portability: this file contains NO absolute paths. Every machine-specific value is
+# computed by the Loader at row activation from `baseUrl`, the resolution base the
+# Loader gives each row. For a *bundle* patch layer that base is the PROFILE directory
+# (dsh composes bundle patches into the profile's root include), so the bridge is
+# located through the profile's own dependency graph:
+#
+#   createRequire(baseUrl).resolve('dsh-chrome-webmcp/package.json')
+#
+# resolves to the bundle directory recorded by `dsh plugin --profile <name> add
+# link:<bundleDir>` — a `link:` dependency is a link in the profile's node_modules,
+# and `require.resolve` returns the real path of the linked package. `command` uses the
+# same Node that runs the harness. Nothing is imported implicitly: node builtins are
+# fetched with `process.getBuiltinModule`, and `package.json` deliberately has no
+# `exports` field, so its `package.json` subpath stays resolvable.
+- insert:
+    - id: chrome-webmcp-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: chrome
+        transport: stdio
+        command: !!js process.execPath
+        args:
+          - !!js >-
+              process.getBuiltinModule('node:url').fileURLToPath(new URL('bridge.mjs',
+              process.getBuiltinModule('node:url').pathToFileURL(process.getBuiltinModule('node:module')
+              .createRequire(baseUrl).resolve('dsh-chrome-webmcp/package.json'))))
+        cwd: !!js >-
+          process.getBuiltinModule('node:url').fileURLToPath(new URL('.',
+          process.getBuiltinModule('node:url').pathToFileURL(process.getBuiltinModule('node:module')
+          .createRequire(baseUrl).resolve('dsh-chrome-webmcp/package.json'))))
+        env:
+          CHROME_CDP_PORT: '9333'
+        toolCallTimeoutMs: 90000
+        failOnStartupError: true

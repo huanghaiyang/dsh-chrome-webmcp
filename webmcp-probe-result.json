@@ -1,0 +1,22 @@
+{
+  "version": "Chrome/155.0.8059.39",
+  "targetId": "63A666C613A6CE8E0CC393D29923F4CB",
+  "events": [
+    {
+      "method": "Target.attachedToTarget",
+      "params": {
+        "sessionId": "DE7BA0B88BA4EFCA3C4D1D157CF69DB8",
+        "targetInfo": {
+          "targetId": "63A666C613A6CE8E0CC393D29923F4CB",
+          "type": "page",
+          "title": "",
+          "url": "file:///<WORKSPACE>/webmcp-test.html",
+          "attached": true,
+          "canAccessOpener": false,
+          "browserContextId": "5122E73879467EC6D6951E8606A9B7BB"
+        },
+        "waitingForDebugger": false
+      }
+    }
+  ]
+}

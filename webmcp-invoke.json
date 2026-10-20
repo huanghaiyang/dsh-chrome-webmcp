@@ -1,0 +1,98 @@
+{
+  "targetId": "CACB978C23B63604E70DE7669BC437CA",
+  "frameId": "CACB978C23B63604E70DE7669BC437CA",
+  "winner": {
+    "frameId": "CACB978C23B63604E70DE7669BC437CA",
+    "toolName": "add_numbers",
+    "input": {
+      "a": 2,
+      "b": 3
+    }
+  },
+  "events": [
+    {
+      "method": "WebMCP.toolsAdded",
+      "params": {
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers and return the sum.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "a": {
+                  "type": "number",
+                  "description": "first addend"
+                },
+                "b": {
+                  "type": "number",
+                  "description": "second addend"
+                }
+              },
+              "required": [
+                "a",
+                "b"
+              ],
+              "additionalProperties": false
+            },
+            "frameId": "CACB978C23B63604E70DE7669BC437CA",
+            "stackTrace": {
+              "callFrames": [
+                {
+                  "functionName": "",
+                  "scriptId": "3",
+                  "url": "http://127.0.0.1:8788/webmcp-test.html",
+                  "lineNumber": 35,
+                  "columnNumber": 13
+                }
+              ]
+            }
+          },
+          {
+            "name": "get_page_title",
+            "description": "Return the title and URL of the current page.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "frameId": "CACB978C23B63604E70DE7669BC437CA",
+            "stackTrace": {
+              "callFrames": [
+                {
+                  "functionName": "",
+                  "scriptId": "3",
+                  "url": "http://127.0.0.1:8788/webmcp-test.html",
+                  "lineNumber": 24,
+                  "columnNumber": 25
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "sessionId": "C6FC90FBE91469B64006B4B12712D427"
+    },
+    {
+      "method": "WebMCP.toolInvoked",
+      "params": {
+        "toolName": "add_numbers",
+        "frameId": "CACB978C23B63604E70DE7669BC437CA",
+        "invocationId": "DFA68A3DA2BC3E8F25F8A03C0F86287F",
+        "input": "{\"a\":2,\"b\":3}"
+      },
+      "sessionId": "C6FC90FBE91469B64006B4B12712D427"
+    },
+    {
+      "method": "WebMCP.toolResponded",
+      "params": {
+        "invocationId": "DFA68A3DA2BC3E8F25F8A03C0F86287F",
+        "status": "Completed",
+        "output": {
+          "sum": 5
+        }
+      },
+      "sessionId": "C6FC90FBE91469B64006B4B12712D427"
+    }
+  ]
+}

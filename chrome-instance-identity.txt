@@ -1,0 +1,20 @@
+Google LLC
+版权所有 2026 Google LLC. 保留所有权利。
+Google Chrome	155.0.8059.39 (正式版本) （64 位） (cohort: Stable) 
+修订版本	3ff7ac5a9224be9156d7f8703a06e22890aafd34-refs/branch-heads/8059@{#935}
+操作系统	Windows 11 (Build <redacted>)
+JavaScript	V8 15.5.35.20
+用户代理	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36
+命令行	"<CHROME_EXE>" --user-data-dir="<WORKSPACE>\.chrome-webmcp" --no-first-run --no-default-browser-check --remote-debugging-port=9333 --remote-allow-origins=* --enable-features=enable-webmcp-testing,WebMCP --enable-blink-features=WebMCP --disable-background-networking --disable-sync --flag-switches-begin --flag-switches-end about:blank
+可执行文件路径	<CHROME_EXE>
+个人资料路径	<WORKSPACE>\.chrome-webmcp\Default
+变体版本来源	command line or about flags
+命令行变体	<redacted>
+使用中的变体	<已移除 30 项本机 variation ID>
+
+# ---------------------------------------------------------------
+# 本文档是 chrome://version 的输出，用于证明被操作的浏览器是隔离实例。
+# 已脱敏：用户名与绝对路径（<WORKSPACE>/<CHROME_EXE>）、OS 精确 build、
+#         profile 路径、variation ID 列表、命令行变体 base64。
+# 保留：Chrome 版本与修订哈希、UA、完整启动参数（均为公开/技术信息，利于复现）。
+# ---------------------------------------------------------------

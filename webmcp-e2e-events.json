@@ -1,0 +1,21 @@
+{
+  "targetId": "82E6396907733AA4AB4D0B28BE2313B1",
+  "events": [
+    {
+      "method": "Target.attachedToTarget",
+      "params": {
+        "sessionId": "395D6745FA6AA36ED638130835177135",
+        "targetInfo": {
+          "targetId": "82E6396907733AA4AB4D0B28BE2313B1",
+          "type": "page",
+          "title": "127.0.0.1:8788/webmcp-test.html",
+          "url": "http://127.0.0.1:8788/webmcp-test.html",
+          "attached": true,
+          "canAccessOpener": false,
+          "browserContextId": "19C409473D0BAF7002F6DE681260B3F2"
+        },
+        "waitingForDebugger": false
+      }
+    }
+  ]
+}

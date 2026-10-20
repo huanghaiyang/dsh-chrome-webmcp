@@ -1,0 +1,16 @@
+[6108:4284:1013/231751.370:ERROR:chrome\browser\extensions\external_registry_loader_win.cc:161] File <VENDOR_PATH>\extension.crx for key Software\Google\Chrome\Extensions\<ext-id> does not exist or is not readable.
+[6108:4284:1013/231751.373:ERROR:chrome\browser\extensions\external_registry_loader_win.cc:161] File <VENDOR_PATH>\<vendor-file>.crx for key Software\Google\Chrome\Extensions\<ext-id> does not exist or is not readable.
+
+DevTools listening on ws://127.0.0.1:9333/devtools/browser/<devtools-uuid>
+[6108:40224:1013/231810.522:ERROR:chrome\updater\ipc\update_service_dialer_win.cc:76] Failed to open named pipe server process 33284: 拒绝访问。 (0x5)
+[6108:37096:1013/231810.810:ERROR:chrome\updater\ipc\update_service_dialer_win.cc:76] Failed to open named pipe server process 40916: 拒绝访问。 (0x5)
+[6108:40224:1013/231813.113:ERROR:chrome\updater\ipc\update_service_dialer_win.cc:76] Failed to open named pipe server process 41384: 拒绝访问。 (0x5)
+[6108:37096:1013/231815.448:ERROR:chrome\updater\ipc\update_service_dialer_win.cc:76] Failed to open named pipe server process 39152: 拒绝访问。 (0x5)
+[6108:40224:1013/231817.796:ERROR:chrome\updater\ipc\update_service_dialer_win.cc:76] Failed to open named pipe server process 36876: 拒绝访问。 (0x5)
+[6108:37096:1013/231820.069:ERROR:chrome\updater\ipc\update_service_dialer_win.cc:76] Failed to open named pipe server process 37792: 拒绝访问。 (0x5)
+
+# ---------------------------------------------------------------
+# Chrome 启动 stderr（隔离实例）。已脱敏：第三方软件安装路径与扩展 ID
+# （<VENDOR_PATH>/<ext-id>）以及 DevTools 实例 UUID。
+# 保留：时间戳与进程号（临时、不可识别）、错误类型与错误码。
+# ---------------------------------------------------------------
