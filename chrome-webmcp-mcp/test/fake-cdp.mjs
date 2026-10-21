@@ -147,6 +147,7 @@ export class FakeCdp {
     this.port = null;
     this.host = '127.0.0.1';
     this.versionRequests = 0;
+    this.closeFailures = new Set();
     this.stats = {
       /** Total WebMCP.enable calls (across sessions). */
       enables: 0,
@@ -277,6 +278,12 @@ export class FakeCdp {
 
   setSlowMs(ms) {
     this.slowMs = ms;
+  }
+
+  /** Make `Target.closeTarget` fail for one target (ownership-retention tests). */
+  setCloseFailure(targetId, enabled = true) {
+    if (enabled) this.closeFailures.add(targetId);
+    else this.closeFailures.delete(targetId);
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -551,6 +558,7 @@ export class FakeCdp {
       case 'Target.closeTarget': {
         const target = this.targets.get(params.targetId);
         if (!target) return fail(`No target with targetId ${params.targetId}`);
+        if (this.closeFailures.has(params.targetId)) return fail(`mock close failure for ${params.targetId}`);
         this.#destroyTarget(target);
         reply({ success: true });
         return;

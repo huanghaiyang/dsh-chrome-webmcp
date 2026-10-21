@@ -23,20 +23,36 @@ const positiveInt = (value, fallback) => {
 export const CDP_PORT = positiveInt(process.env.CHROME_CDP_PORT, 9333);
 export const ENDPOINT = `http://127.0.0.1:${CDP_PORT}`;
 
+const LOCAL_BASE = process.env.LOCALAPPDATA || os.tmpdir();
+
+/**
+ * Per-port defaults: two Chrome debug ports must never share a state directory,
+ * a broker log, an ownership file, or a Chrome `--user-data-dir` (Chrome reuses
+ * the first instance for the same profile, so the second port never opens).
+ * Port 9333 keeps the historical directory names for compatibility.
+ */
+export function defaultStateDir(port = CDP_PORT) {
+  const base = path.join(LOCAL_BASE, 'dsh-chrome-webmcp');
+  return port === 9333 ? base : `${base}-${port}`;
+}
+
+export function defaultUserDataDir(port = CDP_PORT) {
+  const base = path.join(LOCAL_BASE, 'dsh-webmcp-chrome');
+  return port === 9333 ? base : `${base}-${port}`;
+}
+
 /** Local IPC endpoint shared by every bridge process for this port. */
 export const IPC_NAME = process.env.CHROME_WEBMCP_IPC || defaultIpcName(CDP_PORT);
 
-/** Bridge-owned state (logs, broker metadata). Never inside the repo. */
-export const STATE_DIR =
-  process.env.CHROME_WEBMCP_STATE_DIR ||
-  path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'dsh-chrome-webmcp');
+/** Bridge-owned state (logs, broker metadata, task ownership). Never inside the repo. */
+export const STATE_DIR = process.env.CHROME_WEBMCP_STATE_DIR || defaultStateDir(CDP_PORT);
 export const LOG_FILE = path.join(STATE_DIR, 'broker.log');
 export const STATE_FILE = path.join(STATE_DIR, 'broker.json');
+/** Survives broker restarts so task page ownership is not lost. */
+export const OWNERSHIP_FILE = path.join(STATE_DIR, 'ownership.json');
 
 /** Isolated Chrome profile used by `launch` when it has to start a browser. */
-export const USER_DATA_DIR =
-  process.env.CHROME_USER_DATA_DIR ||
-  path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'dsh-webmcp-chrome');
+export const USER_DATA_DIR = process.env.CHROME_USER_DATA_DIR || defaultUserDataDir(CDP_PORT);
 
 export const CHROME_LISTEN_WAIT_MS = positiveInt(process.env.CHROME_LISTEN_WAIT_MS, 25000);
 /** Quiet window used to decide that a page finished replaying its tools. */
@@ -108,6 +124,7 @@ export function describeConfig() {
     endpoint: ENDPOINT,
     ipc: IPC_NAME,
     stateDir: STATE_DIR,
+    ownershipFile: OWNERSHIP_FILE,
     userDataDir: USER_DATA_DIR,
   };
 }

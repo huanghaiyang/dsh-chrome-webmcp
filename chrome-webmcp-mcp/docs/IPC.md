@@ -83,8 +83,13 @@ Result:
   default context.
 - `close_task` closes only that task's owned pages and disposes its context. It
   never closes unowned pages or another task's pages, and never closes Chrome.
+  Pages that could not be confirmed closed are reported in `stillOpen` and keep
+  their ownership so a later retry can finish the job.
 - `close_browser` is the only operation that shuts Chrome down and requires
   `confirm: true`.
+- Ownership is persisted under the broker state directory (`ownership.json`,
+  per-port state directory). A broker restart re-loads it and reconciles it with
+  `Target.getTargets`; targets that disappeared are dropped.
 
 ### Page facts
 
@@ -102,17 +107,20 @@ URLs of other tasks' pages must not appear in `status` summary output.
 - The registry is persistent: once a target has been discovered, later
   `list_tools` calls return the cached registry immediately. `refresh: true`
   re-enables and waits for a settle window.
-- First-time discovery uses an **adaptive settle**: resolve on the first
-  `toolsAdded` after a quiet window of 150 ms, or after `waitMs`
-  (default `CHROME_TOOL_SETTLE_MS`), whichever comes first. Never a fixed
-  1.5 s sleep on every call.
+- First-time discovery uses an **adaptive settle**: after `WebMCP.enable`, wait
+  for a quiet window of 120 ms once `toolsAdded`/`toolsRemoved` events start, a
+  short 450 ms idle fallback when the page replays no tools, or the hard
+  `waitMs` ceiling (default `CHROME_TOOL_SETTLE_MS`), whichever comes first.
+  Never a fixed 1.5 s sleep on every call.
 - Attach/enable/discovery must be single-flight per target: concurrent callers
   share one promise and one enable.
 
 ### Tool invocation
 
 - `invoke_tool` waits for `WebMCP.toolResponded` keyed by `invocationId`. No
-  polling loop. Register the waiter **before** sending `WebMCP.invokeTool`.
+  polling loop. Send `WebMCP.invokeTool` first; when the response arrives before
+  the `{invocationId}` acknowledgement it is parked in a short-lived `recent`
+  table, and the waiter is attached as soon as the id is known.
 - Waiting for a response must not occupy a CDP scheduler slot: the CDP command
   returns `{invocationId}` immediately; the wait is local state.
 - A timeout (`waitMs`, default `CHROME_INVOKE_WAIT_MS`, cap 120000) rejects with
@@ -135,7 +143,7 @@ fields are optional unless marked.
 | `list_tools` | `taskId`, `targetId?`, `url?`, `waitMs?`, `refresh?` | see below |
 | `invoke_tool` | `taskId`, `toolName`*, `input?`, `targetId?`, `url?`, `frameId?`, `waitMs?` | see below |
 | `open_page` | `taskId`, `url`*, `isolated?`, `waitMs?` | see below |
-| `close_task` | `taskId` | `{taskId, closedTargetIds, disposedContext}` |
+| `close_task` | `taskId` | `{taskId, closedTargetIds, stillOpen, disposedContext}` |
 | `close_browser` | `confirm`* (must be `true`) | `{closed:true}` |
 | `launch` | `url?`, `timeoutMs?` | `{launched, alreadyRunning, pid?, userDataDir?, browser?}` |
 | `shutdown` | — | `{stopping:true}` (test-only; broker exits) |
@@ -155,6 +163,9 @@ fields are optional unless marked.
 
 `status` is read-only: it must not attach a session or enable WebMCP.
 `detail: "full"` may include other tasks' page counts, never their URLs.
+When Chrome is unreachable, `status` still answers with
+`chrome.reachable: false` and a top-level `pageIndexError` (for example
+`CHROME_UNREACHABLE`) instead of failing.
 
 ### `list_tools`
 
@@ -190,10 +201,10 @@ counted. `refresh` is coalesced per target.
 }
 ```
 
-Resolution order: task-owned pages (most recently used first), then unowned
+Resolution order: task-owned pages (most recently opened first), then unowned
 pages. If more than one candidate has the tool, `ambiguous` is true and the
 chosen target is reported. If no candidate has the tool: `TOOL_NOT_FOUND` with
-`data: {pages, candidates, toolName}`.
+`data: {toolName, taskId, candidates}`.
 
 ### `open_page`
 
@@ -214,7 +225,9 @@ owned by the task even if no tools register.
   and an event subscription. It enforces:
   - global in-flight cap `CHROME_WEBMCP_MAX_INFLIGHT` (default 32),
   - per-client in-flight cap `CHROME_WEBMCP_CLIENT_MAX_INFLIGHT` (default 8),
-  - FIFO round-robin across clients so one client cannot starve another,
+  - FIFO selection with a per-client in-flight cap: entries from a client that
+    is already at its cap are skipped, so other clients behind it still get a
+    slot and one client cannot starve the rest,
   - per-command timeout `CHROME_CDP_TIMEOUT_MS` (default 30000); a timed-out
     command frees its slot and its late response is ignored.
 - Discovery scans run with `CHROME_WEBMCP_DISCOVERY_CONCURRENCY` (default 4)

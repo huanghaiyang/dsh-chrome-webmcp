@@ -41,6 +41,7 @@ let ipcName;
 let stateDir;
 let stateFile;
 let logFile;
+let ownershipFile;
 let clientA;
 let clientB;
 /** Page target opened and owned by task "a". */
@@ -66,12 +67,14 @@ before(async () => {
   stateDir = uniqueStateDir('broker-state');
   stateFile = path.join(stateDir, 'broker.json');
   logFile = path.join(stateDir, 'broker.log');
+  ownershipFile = path.join(stateDir, 'ownership.json');
 
   broker = await runBroker({
     ipcName,
     port: fake.port,
     stateFile,
     logFile,
+    ownershipFile,
     idleMs: IN_PROCESS_IDLE_MS,
     settleMs: 400,
     invokeWaitMs: 10000,
@@ -364,6 +367,112 @@ test('invalid params and CONFIRM_REQUIRED are answered without dropping the conn
   const pong = await clientA.call('ping', {});
   assert.equal(pong.pong, true);
   assert.equal(typeof pong.uptimeMs, 'number');
+});
+
+test('close_task keeps ownership when Chrome refuses to close a page', { timeout: TEST_TIMEOUT }, async () => {
+  fake.setCloseFailure(freshTargetA, true);
+  let failed;
+  try {
+    failed = await clientA.call('close_task', { taskId: 'a' });
+  } finally {
+    fake.setCloseFailure(freshTargetA, false);
+  }
+  assert.deepEqual(failed.stillOpen, [freshTargetA], 'the unclosed page must be reported');
+  assert.deepEqual(failed.closedTargetIds, [], 'no target was actually closed');
+  assert.equal(fake.hasTarget(freshTargetA), true, 'the page must still exist');
+  assert.equal(failed.disposedContext, false, 'a context must not be disposed while a page survives');
+
+  const list = await clientA.call('list_tools', { taskId: 'a', waitMs: 4000 });
+  assert.ok(
+    list.pages.some((page) => page.targetId === freshTargetA),
+    'ownership must be retained after a failed close',
+  );
+
+  const retried = await clientA.call('close_task', { taskId: 'a' });
+  assert.deepEqual(retried.closedTargetIds, [freshTargetA]);
+  assert.deepEqual(retried.stillOpen, []);
+  assert.equal(fake.hasTarget(freshTargetA), false, 'a retried close must succeed');
+});
+
+test('status still answers when Chrome is unreachable', { timeout: TEST_TIMEOUT }, async () => {
+  const downFake = await startFakeCdp({ slowMs: 0 });
+  const downIpc = await reserveIpcEndpoint('status-down');
+  const downDir = uniqueStateDir('status-down');
+  const downBroker = await runBroker({
+    ipcName: downIpc,
+    port: downFake.port,
+    stateFile: path.join(downDir, 'broker.json'),
+    logFile: path.join(downDir, 'broker.log'),
+    ownershipFile: path.join(downDir, 'ownership.json'),
+    idleMs: IN_PROCESS_IDLE_MS,
+    settleMs: 400,
+    handleSignals: false,
+  });
+  try {
+    const downClient = await connectClient(downIpc, { taskId: 'down' });
+    try {
+      await downFake.close();
+      const status = await downClient.call('status', { taskId: 'down' }, { timeoutMs: 10000 });
+      assert.equal(status.chrome.reachable, false, 'status must report the missing Chrome');
+      assert.equal(status.task.id, 'down');
+      assert.equal(status.pageIndexError, 'CHROME_UNREACHABLE', 'the page index failure must be reported');
+    } finally {
+      downClient.close();
+    }
+  } finally {
+    await downBroker.close().catch(() => {});
+    rmrf(downDir);
+  }
+});
+
+test('ownership survives a broker restart and keeps task isolation', { timeout: TEST_TIMEOUT }, async () => {
+  const restartFake = await startFakeCdp({ slowMs: 0 });
+  const restartIpc = await reserveIpcEndpoint('restart');
+  const restartDir = uniqueStateDir('restart');
+  const restartState = {
+    ipcName: restartIpc,
+    port: restartFake.port,
+    stateFile: path.join(restartDir, 'broker.json'),
+    logFile: path.join(restartDir, 'broker.log'),
+    ownershipFile: path.join(restartDir, 'ownership.json'),
+    idleMs: IN_PROCESS_IDLE_MS,
+    settleMs: 400,
+    handleSignals: false,
+  };
+  const first = await runBroker(restartState);
+  let firstClient;
+  let secondClient;
+  let second;
+  let pageA;
+  let pageB;
+  try {
+    firstClient = await connectClient(restartIpc, { taskId: 'persist-a' });
+    pageA = (await firstClient.call('open_page', { taskId: 'persist-a', url: 'https://persist.example/a', waitMs: 4000 })).targetId;
+    pageB = (await firstClient.call('open_page', { taskId: 'persist-b', url: 'https://persist.example/b', waitMs: 4000 })).targetId;
+    assert.ok(exists(restartState.ownershipFile), 'ownership file must be written');
+    firstClient.close();
+    firstClient = undefined;
+    await first.close();
+
+    second = await runBroker(restartState);
+    secondClient = await connectClient(restartIpc, { taskId: 'persist-a' });
+    const list = await secondClient.call('list_tools', { taskId: 'persist-a', waitMs: 4000 });
+    const ids = list.pages.map((page) => page.targetId);
+    assert.ok(ids.includes(pageA), 'restored task must see its own page');
+    assert.ok(!ids.includes(pageB), "restored task must not see another task's page");
+
+    const closed = await secondClient.call('close_task', { taskId: 'persist-a' });
+    assert.deepEqual(closed.closedTargetIds, [pageA]);
+    assert.equal(restartFake.hasTarget(pageA), false);
+    assert.equal(restartFake.hasTarget(pageB), true, "another task's page must survive");
+  } finally {
+    firstClient?.close();
+    secondClient?.close();
+    await first.close().catch(() => {});
+    await second?.close().catch(() => {});
+    await restartFake.close().catch(() => {});
+    rmrf(restartDir);
+  }
 });
 
 test('real broker child idle-exits, removes the state file, and leaves Chrome running', { timeout: 60000 }, async () => {

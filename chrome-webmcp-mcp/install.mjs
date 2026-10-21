@@ -17,6 +17,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const MIN_NODE_MAJOR = 22;
+const MIN_NODE_MINOR = 3;
+const MIN_NODE_LABEL = '22.3';
 const BUNDLE_NAME = 'dsh-chrome-webmcp';
 const BUNDLE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const IS_WIN = process.platform === 'win32';
@@ -26,6 +28,8 @@ const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const HELP = `Usage: node install.mjs [options]
 
 Register this directory as the \`${BUNDLE_NAME}\` bundle in a DSH profile.
+
+Requires Node >= ${MIN_NODE_LABEL}.
 
 Options:
   --profile <name>   DSH profile to install into (default: $DSH_PROFILE, else "${DEFAULT_PROFILE}")
@@ -241,9 +245,14 @@ function main() {
     return;
   }
 
-  const nodeMajor = Number(process.versions.node.split('.')[0]);
-  if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
-    fail(`Node >= ${MIN_NODE_MAJOR} is required, this is ${process.version} (${process.execPath})`);
+  const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+  if (
+    !Number.isInteger(nodeMajor) ||
+    !Number.isInteger(nodeMinor) ||
+    nodeMajor < MIN_NODE_MAJOR ||
+    (nodeMajor === MIN_NODE_MAJOR && nodeMinor < MIN_NODE_MINOR)
+  ) {
+    fail(`Node >= ${MIN_NODE_LABEL} is required, this is ${process.version} (${process.execPath})`);
   }
   if (!isFile(path.join(BUNDLE_DIR, 'bridge.mjs')) || !isFile(path.join(BUNDLE_DIR, 'cordis.patch.yml'))) {
     fail(`${BUNDLE_DIR} is not a complete bundle: bridge.mjs and cordis.patch.yml must both exist`);

@@ -13,9 +13,11 @@
 - **A dedicated Chrome profile.** `launch` starts Chrome with `--user-data-dir` under
   `%LOCALAPPDATA%` (default `dsh-webmcp-chrome`), separate from the user's everyday
   profile. It does not read or upload that profile's data.
-- **State on disk.** Broker log and state file live under
-  `%LOCALAPPDATA%\dsh-chrome-webmcp` (override: `CHROME_WEBMCP_STATE_DIR`); the state file
-  holds only `{pid, ipc, port, startedAt, version}`. Neither is committed to the repo.
+- **State on disk.** Broker log, runtime state and task ownership live under
+  `%LOCALAPPDATA%\dsh-chrome-webmcp` (override: `CHROME_WEBMCP_STATE_DIR`; non-9333 ports
+  add `-<port>`). `broker.json` holds `{pid, ipc, port, startedAt, version}` and
+  `ownership.json` holds task ids plus Chrome target/context ids (no page content, URLs,
+  cookies, or credentials). Neither is committed to the repo.
 - **No credentials.** The plugin has no accounts, tokens, or API keys, and stores no
   page data. It does not read cookies; a browser context created for an isolated task
   simply has its own empty storage.

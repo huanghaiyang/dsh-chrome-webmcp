@@ -8,20 +8,102 @@
  * driving each other's tabs, and task-scoped close never touches the browser or
  * another task's work.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { CdpError } from './cdp.mjs';
 
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export class TaskBook {
-  constructor({ cdp, sessions, log = () => {} }) {
+  constructor({ cdp, sessions, log = () => {}, ownershipFile }) {
     this.cdp = cdp;
     this.sessions = sessions;
     this.log = log;
+    this.ownershipFile = ownershipFile || null;
     this.tasks = new Map();
     this.owners = new Map(); // targetId -> taskId
     this.pages = new Map(); // targetId -> targetInfo
     this.refreshing = null;
+    this.#loadOwnership();
     cdp.onEvent((message) => this.#onEvent(message));
+  }
+
+  /**
+   * Restore page ownership after a broker restart (idle exit, crash, upgrade).
+   * Chrome target ids are stable while Chrome stays up; targets that disappeared
+   * are dropped on the first refresh.
+   */
+  #loadOwnership() {
+    if (!this.ownershipFile) return;
+    let snapshot;
+    try {
+      snapshot = JSON.parse(fs.readFileSync(this.ownershipFile, 'utf8'));
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        this.log('[tasks] could not read ownership file', this.ownershipFile, error?.message || String(error));
+      }
+      return;
+    }
+    if (snapshot?.version !== 1 || !Array.isArray(snapshot.tasks)) {
+      this.log('[tasks] ignoring unsupported ownership snapshot', this.ownershipFile);
+      return;
+    }
+    let restored = 0;
+    for (const entry of snapshot.tasks) {
+      if (!entry || typeof entry.id !== 'string' || !TASK_ID.test(entry.id)) continue;
+      const targets = new Set(
+        (Array.isArray(entry.targets) ? entry.targets : []).filter((targetId) => typeof targetId === 'string'),
+      );
+      if (targets.size === 0) continue;
+      const browserContextId =
+        typeof entry.browserContextId === 'string' && entry.browserContextId ? entry.browserContextId : null;
+      this.tasks.set(entry.id, {
+        id: entry.id,
+        targets,
+        browserContextId,
+        isolated: Boolean(browserContextId),
+        createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+        lastUsedAt: Number.isFinite(entry.lastUsedAt) ? entry.lastUsedAt : Date.now(),
+      });
+      for (const targetId of targets) this.owners.set(targetId, entry.id);
+      restored += 1;
+    }
+    if (restored > 0) this.log('[tasks] restored ownership for', restored, 'task(s)');
+  }
+
+  /** Persist ownership synchronously (small file, changes are infrequent). */
+  persist() {
+    if (!this.ownershipFile) return;
+    const snapshot = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      tasks: [...this.tasks.values()]
+        .filter((task) => task.targets.size > 0)
+        .map((task) => ({
+          id: task.id,
+          targets: [...task.targets],
+          browserContextId: task.browserContextId,
+          isolated: task.isolated,
+          createdAt: task.createdAt,
+          lastUsedAt: task.lastUsedAt,
+        })),
+    };
+    const text = `${JSON.stringify(snapshot, null, 2)}\n`;
+    try {
+      fs.mkdirSync(path.dirname(this.ownershipFile), { recursive: true });
+      const temporary = `${this.ownershipFile}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, text);
+      try {
+        fs.renameSync(temporary, this.ownershipFile);
+      } catch {
+        // Windows can refuse to replace an existing file; fall back to a direct
+        // write after removing the target.
+        fs.rmSync(this.ownershipFile, { force: true });
+        fs.renameSync(temporary, this.ownershipFile);
+      }
+    } catch (error) {
+      this.log('[tasks] could not persist ownership', this.ownershipFile, error?.message || String(error));
+    }
   }
 
   normalize(taskId) {
@@ -62,12 +144,15 @@ export class TaskBook {
       for (const info of targetInfos) if (info?.type === 'page') next.set(info.targetId, info);
       // Drop ownership of targets that no longer exist (closed by the user,
       // browser restart, or another task).
+      let removed = false;
       for (const [targetId, owner] of this.owners) {
         if (next.has(targetId)) continue;
         this.owners.delete(targetId);
         this.tasks.get(owner)?.targets.delete(targetId);
+        removed = true;
       }
       this.pages = next;
+      if (removed) this.persist();
     })();
     try {
       return await this.refreshing;
@@ -149,6 +234,9 @@ export class TaskBook {
     task.targets.add(targetId);
     this.owners.set(targetId, id);
     this.touch(task);
+    // Persist before the slower discovery phase so a crash cannot lose the
+    // ownership of a page that already exists in Chrome.
+    this.persist();
 
     await this.refreshPages();
     const page = this.pages.get(targetId) ?? {
@@ -194,25 +282,50 @@ export class TaskBook {
   async closeTask({ taskId }) {
     const id = this.normalize(taskId);
     const task = this.tasks.get(id);
-    if (!task) return { taskId: id, closedTargetIds: [], disposedContext: false };
+    if (!task) return { taskId: id, closedTargetIds: [], stillOpen: [], disposedContext: false };
 
+    const attempted = [...task.targets];
     const closedTargetIds = [];
     await Promise.all(
-      [...task.targets].map(async (targetId) => {
+      attempted.map(async (targetId) => {
         try {
           await this.cdp.send('Target.closeTarget', { targetId }, undefined, { timeoutMs: 5000 });
           closedTargetIds.push(targetId);
-        } catch {
-          /* already gone */
+        } catch (error) {
+          // Keep ownership: the page may still be alive (protected target,
+          // Chrome busy, or a transient CDP error).
+          this.log('[tasks] closeTarget failed', targetId, error?.code || '', error?.message || String(error));
         }
-        this.owners.delete(targetId);
-        this.pages.delete(targetId);
-        this.sessions.dropTarget(targetId);
       }),
     );
 
+    // Verify against Chrome instead of trusting the command result alone. If
+    // Chrome is unreachable we cannot prove a page is gone, so keep its owner.
+    let liveTargets = null;
+    try {
+      await this.refreshPages();
+      liveTargets = new Set(this.pages.keys());
+    } catch (error) {
+      this.log('[tasks] could not verify closed targets', error?.code || '', error?.message || String(error));
+    }
+
+    const stillOpen = [];
+    for (const targetId of attempted) {
+      const closedByCommand = closedTargetIds.includes(targetId);
+      const gone = closedByCommand || (liveTargets !== null && !liveTargets.has(targetId));
+      if (!gone) {
+        stillOpen.push(targetId);
+        continue;
+      }
+      this.owners.delete(targetId);
+      this.pages.delete(targetId);
+      this.sessions.dropTarget(targetId);
+    }
+
     let disposedContext = false;
-    if (task.browserContextId) {
+    // Disposing a browser context would also close pages we are keeping, so
+    // only do it when every owned page is confirmed gone.
+    if (task.browserContextId && stillOpen.length === 0) {
       try {
         await this.cdp.send(
           'Target.disposeBrowserContext',
@@ -225,8 +338,15 @@ export class TaskBook {
         /* target/context already gone */
       }
     }
-    this.tasks.delete(id);
-    return { taskId: id, closedTargetIds, disposedContext };
+
+    if (stillOpen.length > 0) {
+      task.targets = new Set(stillOpen);
+      task.lastUsedAt = Date.now();
+    } else {
+      this.tasks.delete(id);
+    }
+    this.persist();
+    return { taskId: id, closedTargetIds, stillOpen, disposedContext };
   }
 
   async closeBrowser() {
@@ -241,13 +361,22 @@ export class TaskBook {
     this.tasks.clear();
     this.owners.clear();
     this.pages.clear();
+    this.persist();
     return { closed: true };
   }
 
   async status({ taskId, detail = 'summary' } = {}) {
     const id = this.normalize(taskId);
     const task = this.ensure(id);
-    await this.refreshPages();
+    let pageIndexError = null;
+    try {
+      await this.refreshPages();
+    } catch (error) {
+      // status must stay useful when Chrome is down: report the failure and
+      // whatever page facts were last known instead of throwing.
+      pageIndexError = error?.code || 'INTERNAL';
+      this.log('[tasks] status page index unavailable', pageIndexError, error?.message || String(error));
+    }
     const pages = [...task.targets]
       .map((targetId) => this.pages.get(targetId))
       .filter(Boolean)
@@ -268,6 +397,7 @@ export class TaskBook {
         browserContextId: task.browserContextId,
       },
       otherTasks: detail === 'full' ? otherTasks : otherTasks.map(({ id: otherId, pages: count }) => ({ id: otherId, pages: count })),
+      ...(pageIndexError ? { pageIndexError } : {}),
     };
   }
 
@@ -298,6 +428,7 @@ export class TaskBook {
       if (owner) {
         this.owners.delete(targetId);
         this.tasks.get(owner)?.targets.delete(targetId);
+        this.persist();
       }
     }
   }

@@ -2,6 +2,7 @@
 
 > 适用版本：`dsh-chrome-webmcp` **2.0.0**
 > 实测环境：Windows 11 / Chrome **155.0.8059.80** / Node **v22.22.0**
+> 运行要求：Node **>= 22.3**（补丁使用 `process.getBuiltinModule`）
 > 读者：需要部署、运维、排查或二次开发本插件的工程师
 > 相关文档：[安装指南](INSTALL.md) · [内部 IPC 契约](IPC.md) · [中文 README](../README.zh-CN.md) · [英文 README](../README.md)
 
@@ -150,6 +151,7 @@ v1 是每个 MCP 服务器进程直接打开一条 CDP WebSocket。它在单任�
 ### 4.3 关键不变量与状态机
 
 - broker 启动后写 `broker.json` 状态文件；退出时删除。
+- 任务页面归属写入同目录的 `ownership.json`；broker 重启/空闲退出后重新加载并与 `Target.getTargets` 对账。
 - client 连接后必须先 `hello`；除 `ping` 外的请求在握手前被拒绝。
 - 每个 target 的 session 由 `SessionBook.ensuring` 单飞创建；断开/关闭时清理。
 - 每个 target 的归属由 `TaskBook.owners` 记录；target 消失时自动回收。
@@ -250,7 +252,7 @@ POSIX：
 ./install.sh --profile web
 ```
 
-安装器只做三件事：检查 Node ≥ 22 与 bundle 完整性、找到 `dsh`（`DSH_BIN` 或 PATH）、执行官方命令：
+安装器只做三件事：检查 Node ≥ 22.3 与 bundle 完整性、找到 `dsh`（`DSH_BIN` 或 PATH）、执行官方命令：
 
 ```text
 dsh plugin --profile <profile> add link:<bundle绝对路径>       # 安装
@@ -287,9 +289,9 @@ plugin_manager set_bundle target=dsh-chrome-webmcp enabled=true    # 恢复
 |---|---|---|---|
 | `CHROME_CDP_PORT` | `9333` | DevTools 端口；同时决定 broker IPC 名称 | 改端口会启动独立 broker |
 | `CHROME_WEBMCP_IPC` | Windows `\\.\pipe\dsh-chrome-webmcp-<port>`；Unix `<tmp>/dsh-chrome-webmcp-<port>.sock` | IPC 端点 | 测试用 `tcp://127.0.0.1:<port>` |
-| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp`（Unix 为 tmp） | broker 日志/状态 | 多实例测试隔离 |
+| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp`（端口 9333）；其他端口为 `...-<port>` | broker 日志/状态/归属文件 | 多实例测试隔离 |
 | `CHROME_PATH` | 自动探测 | `launch` 使用的 Chrome | 非标准安装时显式设置 |
-| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | `launch` 的隔离 profile | 不要指向日常 profile |
+| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome`（端口 9333）；其他端口为 `...-<port>` | `launch` 的隔离 profile | 不要指向日常 profile |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 | 慢机器可调大 |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次工具发现的 settle 上限 | 页面工具注册慢时调大 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 默认调用等待 | 长任务页面调大 |
@@ -312,8 +314,11 @@ plugin_manager set_bundle target=dsh-chrome-webmcp enabled=true    # 恢复
 ```text
 %LOCALAPPDATA%\dsh-chrome-webmcp\
 ├── broker.log       # 运行日志（连接、错误、停止）
-└── broker.json      # {pid, ipc, port, startedAt, version}
+├── broker.json      # {pid, ipc, port, startedAt, version}（退出时删除）
+└── ownership.json   # 任务 → target/context 快照（跨 broker 重启保留）
 ```
+
+非 9333 端口使用 `dsh-chrome-webmcp-<port>` 目录；Chrome 隔离 profile 同理使用 `dsh-webmcp-chrome-<port>`，避免两个端口共用同一个 Chrome 实例。
 
 ---
 
@@ -343,6 +348,8 @@ pages:      targetId → targetInfo    # 来自 Target.getTargets / 事件
 | 其他任务 `open_page` | 其他任务 | 否 |
 | 用户/其他软件打开 | 无主 | 是（只读使用；`close` 不会关） |
 
+**归属持久化**：`owners`/`tasks` 会同步写入状态目录的 `ownership.json`（原子替换，失败只记日志）。broker 空闲退出、崩溃或升级后重新启动时，会先加载该文件，再在首次 `Target.getTargets` 时丢弃已不存在的 target。Chrome 本身重启后 targetId 全部变化，旧归属会被清空；`close_browser` 会清空并持久化空快照。
+
 ### 7.3 候选页面算法
 
 `TaskBook.candidates(taskId, {targetId, url})`：
@@ -370,10 +377,12 @@ pages:      targetId → targetInfo    # 来自 Target.getTargets / 事件
 | `close_browser {confirm:true}` | `Browser.close`，清空 broker 的任务/页面状态 | 整个 Chrome |
 
 `close` 对无主页面、其他任务页面、Chrome 本身**完全无副作用**；对不存在的任务返回空结果而不是错误。
+关闭失败或无法确认关闭的页面会出现在 `stillOpen` 中并**保留归属**，避免“关闭失败后页面变成所有人可见”；隔离 context 也只有在全部页面确认关闭后才销毁。重试 `close` 即可继续清理。
 
 ### 7.6 `status` 的信息边界
 
 - `status` 只读：不 attach 页面、不 enable WebMCP。
+- Chrome 不可达时仍然返回：`chrome.reachable:false` + 顶层 `pageIndexError`（如 `CHROME_UNREACHABLE`），不会抛错。
 - `detail: "summary"`（默认）：只列本任务页面，其他任务只给 `{id, pages}`。
 - `detail: "full"`：其他任务额外给 `isolated` 与 `lastUsedAt`，**仍不给 URL**。
 - 因此一个任务无法通过 `status` 枚举其他任务访问了哪些网址。
@@ -448,7 +457,7 @@ settle 规则（`#settle`）：
 | CDP WebSocket 关闭 | 拒绝所有 pending 命令（`CHROME_DISCONNECTED`）；拒绝所有 waiter；清空 session 注册表；任务/归属保留，下次请求重连并 `Target.getTargets` 对账 |
 | target 销毁 / `Inspector.detached` | 删除 session、注册表、归属；拒绝该 target 的 waiter（`TARGET_GONE`） |
 | client 断开 | broker 删除客户端记录；若无客户端，开始空闲计时；不关闭页面 |
-| broker 空闲 | 关闭 IPC 与 CDP，删除状态文件，退出；Chrome 继续运行 |
+| broker 空闲 | 关闭 IPC 与 CDP，删除 `broker.json`，保留 `ownership.json` 后退出；Chrome 继续运行 |
 
 ### 8.6 为什么不会“信道抢占”
 
@@ -583,7 +592,7 @@ broker                          Chrome
 
 ### 10.1 `lib/config.mjs`
 
-所有常量只读一次环境变量。`positiveInt` 保证非正数回退默认。`BRIDGE_ENTRY` 由 `import.meta.url` 推导，因此包被 `link:`、复制或 registry 安装都能定位。
+所有常量只读一次环境变量。`positiveInt` 保证非正数回退默认。`BRIDGE_ENTRY` 由 `import.meta.url` 推导，因此包被 `link:`、复制或 registry 安装都能定位。`defaultStateDir(port)` / `defaultUserDataDir(port)` 为非 9333 端口追加 `-<port>`，避免多端口共享日志、归属文件和 Chrome profile。
 
 ### 10.2 `lib/ipc.mjs`
 
@@ -613,18 +622,21 @@ broker                          Chrome
 ### 10.5 `lib/tasks.mjs`
 
 - `normalize()`：校验 taskId。
-- `refreshPages()`：单飞 `Target.getTargets`；按结果回收已消失 target 的归属。
+- `#loadOwnership()` / `persist()`：加载/原子写入 `ownership.json`；`open_page`、`close_task`、target 销毁、`close_browser`、broker 优雅退出时同步持久化。
+- `refreshPages()`：单飞 `Target.getTargets`；按结果回收已消失 target 的归属（变化时持久化）。
 - `candidates()`：见 7.3；本任务页面 `reverse()` 后优先。
-- `openPage()`：可选创建 context；创建 target；登记归属；首次发现工具；补一次 `Target.getTargetInfo` 拿最终标题/URL。
-- `closeTask()`：并行关页面；销毁 context；删除任务。
-- `closeBrowser()`：`Browser.close` 带 2s 超时；清空状态。
-- `status()`：只统计，不 attach。
+- `openPage()`：可选创建 context；创建 target；登记归属并**立即持久化**；首次发现工具；补一次 `Target.getTargetInfo` 拿最终标题/URL。
+- `closeTask()`：并行关页面；刷新校验实际是否消失；失败的页面保留在 `stillOpen` 且不销毁 context，成功的页面删除归属；只有全部关闭才删除任务。
+- `closeBrowser()`：`Browser.close` 带 2s 超时；清空状态并持久化空快照。
+- `status()`：只统计，不 attach；Chrome 不可达时返回 `pageIndexError` 而不是抛错。
 
 ### 10.6 `broker.mjs`
 
-- `runBroker(options)`：可编程启动（测试直接调用）或 `--broker` 入口。
+- `runBroker(options)`：可编程启动（测试直接调用）或 `--broker` 入口；支持 `ownershipFile` 覆盖。
 - `createLogger()`：写 `broker.log`；>2 MiB 轮转一次。
 - `launchChrome()`：复用已存在端口，否则 spawn Chrome（detached、stdio ignore），250ms 轮询等端口。
+- `close()`：持久化归属、关闭 IPC/CDP、删除 `broker.json`；`ownership.json` 保留。
+- 生产模式（`handleSignals !== false`）安装 SIGINT/SIGTERM；`uncaughtException` 记录后清理状态并 `exit(1)`，由客户端下次调用重建 broker。
 - `listTools()`：`mapLimit(..., DISCOVERY_CONCURRENCY, ...)` 并行发现；单页失败降级为 `skipped`。
 - `invokeTool()`：直接 `frameId+targetId` 跳过注册表扫描；否则按候选顺序找工具；返回 `ambiguous`。
 - `dispatch()`：IPC 方法分发；未 hello 拒绝除 hello/ping 外的请求；`shutdown` 仅测试用。
@@ -712,7 +724,8 @@ const server = startStdioServer(inputPassThrough, outputPassThrough, { exitOnClo
 
 | 文件 | 用例数 | 覆盖 |
 |---|---|---|
-| `test/broker.test.mjs` | 10 | 任务隔离、隔离 context、跨任务拒绝、并发 300ms 调用、`close_task` 作用域、缓存 vs refresh、错误码、非法参数连接存活、真实 broker 子进程空闲退出 |
+| `test/broker.test.mjs` | 13 | 任务隔离、隔离 context、跨任务拒绝、并发 300ms 调用、`close_task` 作用域、关闭失败保留归属、Chrome down 的 `status`、归属跨 broker 重启、缓存 vs refresh、错误码、非法参数连接存活、真实 broker 子进程空闲退出 |
+| `test/config.test.mjs` | 1 | 状态目录/隔离 profile 按端口区分 |
 | `test/mcp.test.mjs` | 5 | initialize、7 工具、open→invoke→close 往返、`[CODE]` 错误文本、stdout 纯 JSON-RPC |
 | `test/live.test.mjs` | 1（默认 skip） | 真实 Chrome + `webmcp-test.html`，`add_numbers {20,22}` → 42 |
 
@@ -721,7 +734,7 @@ const server = startStdioServer(inputPassThrough, outputPassThrough, { exitOnClo
 ```sh
 cd chrome-webmcp-mcp
 node --test --experimental-test-isolation=none "test/*.test.mjs"
-# tests 16 / pass 15 / fail 0 / skipped 1
+# tests 20 / pass 19 / fail 0 / skipped 1
 ```
 
 真实 Chrome 冒烟：
@@ -845,6 +858,15 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 - 新增 `close_browser`（显式确认）。
 - 新增一键安装器、可移植补丁、敏感信息扫描、hermetic 测试。
 - 修复 v1 的固定 settle、轮询结果、跨任务页面干扰、`close` 关整个浏览器等问题。
+
+**稳定性修复（本批次）**
+
+- Chrome 不可达时 `status` 返回 `reachable:false` + `pageIndexError`，不再抛错。
+- 非 9333 端口的状态目录、日志、`ownership.json` 和 Chrome profile 自动追加端口后缀，避免多端口冲突。
+- 任务归属持久化到 `ownership.json`，broker 重启/空闲退出后可恢复。
+- `close_task` 只有确认页面消失才删除归属；失败页面进入 `stillOpen`，隔离 context 不提前销毁。
+- broker 生产模式 `uncaughtException` 记录后退出，由客户端重新拉起；测试模式不安装全局处理器。
+- Node 最低版本提升到 **22.3**（`process.getBuiltinModule`）。
 
 ### v1（历史）
 

@@ -5,6 +5,7 @@
 
 - 目标产物：`dsh-chrome-webmcp`（本目录）
 - 实测环境：Windows 11 / Chrome **155.0.8059.80** / Node v22.22.0
+- 运行要求：**Node >= 22.3**（bundle 补丁使用 `process.getBuiltinModule`）
 - 设计目标：**一键安装、任务隔离、单信道多路复用、仓库可发布**
 - 详细技术文档：[docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md)（架构、调度、协议、源码导读、排障）
 
@@ -169,9 +170,9 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 |---|---|---|
 | `CHROME_CDP_PORT` | `9333` | DevTools 端口；同时决定 broker 端点 |
 | `CHROME_WEBMCP_IPC` | 按端口派生 | IPC 端点（测试可设 `tcp://127.0.0.1:0`） |
-| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp` | broker 日志与状态文件 |
+| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp`（非 9333 端口追加 `-<port>`） | broker 日志、状态与归属文件 |
 | `CHROME_PATH` | 自动探测 | `launch` 使用的 Chrome |
-| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | `launch` 使用的隔离 profile |
+| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome`（非 9333 端口追加 `-<port>`） | `launch` 使用的隔离 profile |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次发现工具的 settle 上限 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 调用结果默认等待 |
@@ -185,6 +186,7 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 > 运维：MCP 服务进程常驻；改完 `bridge.mjs` / `broker.mjs` 后需重启该行
 > （`set_bundle false` → `true`），或让 HMR 重新加载补丁。broker 是独立进程，
 > 代码变更需要杀掉旧 broker（或等它空闲退出）才会生效。
+> 任务归属保存在 `ownership.json`，broker 空闲退出/重启后可恢复。
 
 ---
 

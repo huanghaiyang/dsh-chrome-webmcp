@@ -6,7 +6,7 @@
   "description": "DSH profile bundle: bridges WebMCP tools registered by pages in the local Chrome into the harness as the `chrome` MCP server.",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.3.0"
   },
   "dsh": {
     "bundle": {

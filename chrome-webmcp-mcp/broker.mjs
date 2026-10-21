@@ -19,6 +19,7 @@ import {
   INVOKE_WAIT_MS,
   IPC_NAME,
   LOG_FILE,
+  OWNERSHIP_FILE,
   STATE_FILE,
   TOOL_SETTLE_MS,
   USER_DATA_DIR,
@@ -127,6 +128,7 @@ export async function runBroker(options = {}) {
   const endpoint = `http://127.0.0.1:${port}`;
   let ipcName = options.ipcName ?? IPC_NAME;
   const stateFile = options.stateFile ?? STATE_FILE;
+  const ownershipFile = options.ownershipFile ?? OWNERSHIP_FILE;
   const idleMs = Number(options.idleMs ?? BROKER_IDLE_MS);
   const log = createLogger(options.logFile ?? LOG_FILE);
   const startedAt = Date.now();
@@ -139,7 +141,7 @@ export async function runBroker(options = {}) {
     settleMs: Number(options.settleMs ?? TOOL_SETTLE_MS),
     invokeWaitMs: Number(options.invokeWaitMs ?? INVOKE_WAIT_MS),
   });
-  const tasks = new TaskBook({ cdp, sessions, log });
+  const tasks = new TaskBook({ cdp, sessions, log, ownershipFile });
 
   const clients = new Map();
   let lastClientLeftAt = Date.now();
@@ -442,6 +444,11 @@ export async function runBroker(options = {}) {
     closed = true;
     if (idleTimer) clearInterval(idleTimer);
     try {
+      tasks.persist();
+    } catch {
+      /* ownership persistence is best effort */
+    }
+    try {
       await server.close();
     } catch {
       /* ignore */
@@ -470,13 +477,29 @@ export async function runBroker(options = {}) {
     };
     process.once('SIGINT', () => stop('SIGINT'));
     process.once('SIGTERM', () => stop('SIGTERM'));
+    process.on('unhandledRejection', (error) => {
+      log('[broker] unhandled rejection', error?.stack || error?.message || String(error));
+    });
+    process.on('uncaughtException', (error) => {
+      log('[broker] uncaught exception', error?.stack || error?.message || String(error));
+      try {
+        removeStateFile(stateFile);
+      } catch {
+        /* ignore */
+      }
+      try {
+        tasks.persist();
+      } catch {
+        /* ownership persistence is best effort */
+      }
+      try {
+        log.close();
+      } catch {
+        /* ignore */
+      }
+      process.exit(1);
+    });
   }
-  process.on('unhandledRejection', (error) => {
-    log('[broker] unhandled rejection', error?.stack || error?.message || String(error));
-  });
-  process.on('uncaughtException', (error) => {
-    log('[broker] uncaught exception', error?.stack || error?.message || String(error));
-  });
 
   return {
     brokerId,

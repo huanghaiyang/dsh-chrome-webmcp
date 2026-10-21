@@ -11,8 +11,8 @@ over stdio. Nothing is installed globally and no profile file is edited by hand.
 
 - Bundle directory: `<BUNDLE>` (this file is `<BUNDLE>/docs/INSTALL.md`; the folder
   containing `package.json`, `bridge.mjs`, `cordis.patch.yml`)
-- Node **>= 22**, Chrome **155** with the WebMCP features, a DSH profile that owns the
-  `chrome` MCP row
+- Node **>= 22.3** (the patch uses `process.getBuiltinModule`), Chrome **155** with the
+  WebMCP features, a DSH profile that owns the `chrome` MCP row
 
 ---
 
@@ -116,11 +116,11 @@ environment. Defaults come from `lib/config.mjs`.
 |---|---|---|
 | `CHROME_CDP_PORT` | `9333` | Chrome DevTools port; also keys the broker IPC endpoint |
 | `CHROME_PATH` | auto-detect | Chrome executable for `mcp__chrome__launch` |
-| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | Isolated Chrome profile used by `launch` |
+| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` (port suffix for non-9333) | Isolated Chrome profile used by `launch` |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | How long `launch` waits for the DevTools port |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle window for `toolsAdded` |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default `invoke_tool` wait |
-| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp` | Broker state file and log |
+| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp` (port suffix for non-9333) | Broker log, state and ownership files |
 | `CHROME_WEBMCP_IPC` | derived from the port | IPC endpoint override (tests use it) |
 
 ## 6. Troubleshooting
@@ -155,8 +155,9 @@ flags. Either call `mcp__chrome__launch`, or start Chrome with
 `navigator.modelContext`), and the browser must have been started with both WebMCP
 flags. `list_tools` on a page without tools is a valid empty result, not an error.
 
-**Node too old.** Both the harness and the installer require Node >= 22
-(`engines.node`). `node -v` must report `v22` or newer.
+**Node too old.** Both the harness and the installer require Node >= 22.3
+(`engines.node`; the patch uses `process.getBuiltinModule`). `node -v` must report
+`v22.3` or newer.
 
 ## 7. Verification checklist
 

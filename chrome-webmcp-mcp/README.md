@@ -5,7 +5,8 @@ into a DeepSeek Harness profile as MCP tools.
 
 > 中文文档：[README.zh-CN.md](README.zh-CN.md) · 详细中文技术文档：[docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md) · Install guide: [docs/INSTALL.md](docs/INSTALL.md)
 
-Verified against **Chrome 155.0.8059.80** on Windows 11 with Node 22.
+Verified against **Chrome 155.0.8059.80** on Windows 11 with Node 22.22; requires
+**Node >= 22.3** (the bundle patch uses `process.getBuiltinModule`).
 
 ## What it does
 
@@ -129,9 +130,9 @@ Passing only `enable-webmcp-testing` leaves the page API undefined; passing only
 |---|---|---|
 | `CHROME_CDP_PORT` | `9333` | DevTools port; also keys the broker endpoint |
 | `CHROME_WEBMCP_IPC` | derived from port | IPC endpoint; `tcp://host:port` for tests |
-| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp` | Broker log and state file |
+| `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp` | Broker log, state and ownership files (port suffix for non-9333) |
 | `CHROME_PATH` | auto-detect | Chrome executable used by `launch` |
-| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | Isolated profile used by `launch` |
+| `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | Isolated profile used by `launch` (port suffix for non-9333) |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` port wait |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle ceiling |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default invocation wait |
@@ -142,7 +143,9 @@ Passing only `enable-webmcp-testing` leaves the page API undefined; passing only
 | `CHROME_CDP_TIMEOUT_MS` | `30000` | Per-CDP command timeout |
 | `CHROME_WEBMCP_DISCOVERY_CONCURRENCY` | `4` | Parallel page discovery cap |
 
-Broker diagnostics: `%LOCALAPPDATA%\dsh-chrome-webmcp\broker.log` (rotated at 2 MB).
+Broker diagnostics: `%LOCALAPPDATA%\dsh-chrome-webmcp\broker.log` (rotated at 2 MB);
+non-9333 ports use `dsh-chrome-webmcp-<port>`. Task ownership survives broker restarts
+in `ownership.json`.
 
 ## Verification
 
