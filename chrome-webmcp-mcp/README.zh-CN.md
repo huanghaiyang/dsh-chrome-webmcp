@@ -6,6 +6,7 @@
 - 目标产物：`dsh-chrome-webmcp`（本目录）
 - 实测环境：Windows 11 / Chrome **155.0.8059.80** / Node v22.22.0
 - 设计目标：**一键安装、任务隔离、单信道多路复用、仓库可发布**
+- 详细技术文档：[docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md)（架构、调度、协议、源码导读、排障）
 
 ---
 
@@ -274,6 +275,7 @@ Chrome 限制：`Cannot return tool results after a cross-origin navigation`。
 | [scripts/check-sensitive.mjs](scripts/check-sensitive.mjs) | 仓库级敏感信息检查 |
 | [docs/INSTALL.md](docs/INSTALL.md) | 安装 / 卸载 / 排障 |
 | [docs/IPC.md](docs/IPC.md) | broker ↔ 客户端内部契约 |
+| [docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md) | 详细中文技术文档（架构、调度、协议、源码、排障） |
 | [SECURITY.md](SECURITY.md) | 安全说明 |
 | [test/](test/) | 假 CDP 服务与无外部依赖测试 |
 | [../webmcp-test.html](../webmcp-test.html) | 演示页（`add_numbers`、`get_page_title`） |

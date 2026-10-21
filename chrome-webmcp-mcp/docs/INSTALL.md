@@ -1,5 +1,7 @@
 # Install `dsh-chrome-webmcp`
 
+> 中文技术文档（架构、调度、协议、源码导读）：[TECHNICAL.zh-CN.md](TECHNICAL.zh-CN.md)
+
 Bridges the **WebMCP** tools that web pages register in your local Chrome into a
 DeepSeek Harness (DSH) profile as the MCP server `chrome` (tools `mcp__chrome__*`).
 

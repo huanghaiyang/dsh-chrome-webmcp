@@ -2,7 +2,9 @@
 
 The installable DeepSeek Harness bundle lives in
 [`chrome-webmcp-mcp/`](chrome-webmcp-mcp/README.md). Start there for installation,
-the task-isolation model, and the broker/channel design.
+the task-isolation model, and the broker/channel design. The detailed Chinese
+technical document is
+[`chrome-webmcp-mcp/docs/TECHNICAL.zh-CN.md`](chrome-webmcp-mcp/docs/TECHNICAL.zh-CN.md).
 
 ```
 chrome-webmcp-mcp/   installable plugin (bundle patch, bridge, broker, tests, docs)

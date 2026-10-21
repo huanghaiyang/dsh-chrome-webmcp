@@ -3,7 +3,7 @@
 Bridges the **WebMCP** tools registered by web pages in the locally installed Chrome
 into a DeepSeek Harness profile as MCP tools.
 
-> 中文文档：[README.zh-CN.md](README.zh-CN.md) · Install guide: [docs/INSTALL.md](docs/INSTALL.md)
+> 中文文档：[README.zh-CN.md](README.zh-CN.md) · 详细中文技术文档：[docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md) · Install guide: [docs/INSTALL.md](docs/INSTALL.md)
 
 Verified against **Chrome 155.0.8059.80** on Windows 11 with Node 22.
 
@@ -201,6 +201,7 @@ freedom.
 | [scripts/check-sensitive.mjs](scripts/check-sensitive.mjs) | Repo-wide sensitive-info gate |
 | [docs/INSTALL.md](docs/INSTALL.md) | Install/uninstall/troubleshooting |
 | [docs/IPC.md](docs/IPC.md) | Internal broker/client contract |
+| [docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md) | Detailed Chinese technical documentation |
 | [SECURITY.md](SECURITY.md) | Security posture and reporting |
 | [test/](test/) | Fake CDP + hermetic tests |
 | [../webmcp-test.html](../webmcp-test.html) | Demo page registering `add_numbers`, `get_page_title` |

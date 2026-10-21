@@ -283,7 +283,7 @@ const TOOLS = [
     paramNames: ['taskId', 'toolName', 'input', 'targetId', 'url', 'frameId', 'waitMs'],
     description:
       'Invoke a WebMCP tool and return its result. Searches this task\u2019s owned pages ' +
-      '(most recently used first), then unowned pages; sets ambiguous when more than one ' +
+      '(most recently opened first), then unowned pages; sets ambiguous when more than one ' +
       'candidate registers the tool.',
     inputSchema: {
       type: 'object',

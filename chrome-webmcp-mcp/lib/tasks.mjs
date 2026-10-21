@@ -111,7 +111,9 @@ export class TaskBook {
     }
     const matches = (...pages) =>
       pages.filter((page) => page && (!url || String(page.url || '').includes(url)));
-    const owned = [...task.targets].map((targetIdValue) => this.pages.get(targetIdValue));
+    // Newest opened first, so a task that reopened a page after a reload wins
+    // over its older tabs when a tool name exists on several of them.
+    const owned = [...task.targets].reverse().map((targetIdValue) => this.pages.get(targetIdValue));
     const unowned = [...this.pages.values()].filter((page) => !this.owners.has(page.targetId));
     return matches(...owned, ...unowned);
   }
