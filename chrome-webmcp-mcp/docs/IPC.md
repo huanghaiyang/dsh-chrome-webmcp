@@ -29,6 +29,10 @@ MCP host
   - `lib/cdp.mjs` — CDP WebSocket client, scheduler, event bus (broker-owned).
   - `lib/sessions.mjs` — per-target attach + WebMCP registry (broker-owned).
   - `lib/tasks.mjs` — task namespaces and page ownership (broker-owned).
+  - `lib/pages.mjs` — browser-use page sessions: attach, isolated world,
+    evaluation, mouse/keyboard input, navigation (broker-owned).
+  - `lib/page-scripts.mjs` — the page-side snapshot/click/type/ready scripts
+    injected through `Runtime.evaluate`.
 
 ## 2. IPC transport
 
@@ -130,6 +134,63 @@ URLs of other tasks' pages must not appear in `status` summary output.
   clients must each resolve with their own `invocationId` output.
 - `frameId` requires `targetId`; otherwise `FRAME_WITHOUT_TARGET`.
 
+### Browser-use page sessions
+
+Independent of the WebMCP session registry, the broker keeps a `PageBook` session
+per page target:
+
+- `Target.attachToTarget {flatten:true}` then `Page.createIsolatedWorld` with the
+  world name `dsh-browser-use`. All browser-use scripts run in that world, so the
+  page's DOM, styles and globals are untouched.
+- The ref table lives in the isolated world as a non-enumerable
+  `globalThis.__dshBrowserUse`. A snapshot assigns each interactive element a
+  monotonically increasing integer index (`nextIndex` never resets while the
+  document lives). Only the latest snapshot's indices are current; an old index
+  fails with `REF_NOT_FOUND` instead of addressing a different element.
+- `index` must be an integer in `0..2147483647` (a pure decimal string such as
+  `"12"` is accepted). `null`, booleans, arrays and other non-numeric types are
+  rejected with `INVALID_PARAMS` rather than coerced, so a caller mistake can
+  never turn into a click on element 0.
+- Navigation destroys the isolated world. The next `snapshot` creates a new one
+  and restarts indices at 0; the broker cannot reuse refs across navigation.
+- Works on any page target, including pages with no WebMCP tools.
+- `close_task` drops this session together with the WebMCP session.
+
+Snapshot semantics:
+
+- Serialized as one line per element: `[12]<button type="submit">Sign in</button>`,
+  `[13]<input type="text" name="email" ... />`, `[14]<select ... options="..."/>`.
+- Candidates are links, buttons, inputs, selects, textareas, `summary`,
+  `contenteditable`, ARIA widgets and `tabindex` elements. Elements hidden by
+  `checkVisibility` (opacity/visibility/content-visibility), `aria-hidden`,
+  `inert`, `display:none`, or a zero box are skipped.
+- Password input values are omitted. Open shadow roots are traversed for **every**
+  host element, whether or not the host itself is interactive; closed shadow roots
+  and iframe documents are not reachable.
+- `maxElements` defaults to `CHROME_SNAPSHOT_MAX_ELEMENTS` (200) and is capped at
+  2000. `total` is the number of candidates found; `truncated` is true when the
+  serialized list hit the budget.
+
+Action semantics:
+
+- Actions dispatch real CDP `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`
+  / `Input.insertText`, never `element.click()`, so hover menus, framework
+  handlers and form submission behave like user input.
+- Before clicking, the page script scrolls the element into view, waits two
+  animation frames (150 ms fallback), computes the center point and verifies it
+  with a composed `elementFromPoint` hit test that descends open shadow roots.
+  Covered or off-screen elements fail with `ELEMENT_COVERED` /
+  `ELEMENT_NOT_VISIBLE`.
+- `<select>` is handled by `type_text`: the option is matched by value, exact
+  label, or label substring and set through the native setter, then `input` and
+  `change` are dispatched. Native OS dropdowns are never opened, so these two
+  events are necessarily synthetic (`isTrusted:false`); framework bindings still
+  react to them.
+- `type_text` with `clear` sends `Control+A` (`Meta+A` on macOS), then inserts the
+  text. `submit` presses Enter afterwards.
+- Action timeouts and stale contexts surface as `PAGE_CONTEXT_LOST`; call
+  `snapshot` again.
+
 ## 4. Broker methods
 
 All methods except `hello` and `ping` are task-scoped where noted. `params`
@@ -142,6 +203,11 @@ fields are optional unless marked.
 | `status` | `taskId`, `detail: "summary"\|"full"` | see below |
 | `list_tools` | `taskId`, `targetId?`, `url?`, `waitMs?`, `refresh?` | see below |
 | `invoke_tool` | `taskId`, `toolName`*, `input?`, `targetId?`, `url?`, `frameId?`, `waitMs?` | see below |
+| `snapshot` | `taskId`, `targetId?`, `url?`, `maxElements?` | see below |
+| `click` | `taskId`, `index`*, `targetId?`, `url?`, `button?`, `clickCount?`, `waitMs?` | see below |
+| `type_text` | `taskId`, `index`*, `text`*, `targetId?`, `url?`, `clear?`, `submit?`, `waitMs?` | see below |
+| `press_key` | `taskId`, `key`*, `targetId?`, `url?`, `waitMs?` | see below |
+| `navigate` | `taskId`, `url`*, `targetId?`, `waitMs?` | see below |
 | `open_page` | `taskId`, `url`*, `isolated?`, `waitMs?` | see below |
 | `close_task` | `taskId` | `{taskId, closedTargetIds, stillOpen, disposedContext}` |
 | `close_browser` | `confirm`* (must be `true`) | `{closed:true}` |
@@ -216,6 +282,99 @@ chosen target is reported. If no candidate has the tool: `TOOL_NOT_FOUND` with
 `waitMs` bounds page-load + first tool discovery (default 2500). The page becomes
 owned by the task even if no tools register.
 
+### Browser-use methods
+
+An explicit `targetId` must be owned by the task or be unowned (otherwise
+`TARGET_OTHER_TASK`); a `targetId` that no longer exists is `TARGET_NOT_FOUND`.
+
+Perception and action resolve their page differently:
+
+- `snapshot` (perception) may omit `targetId`. It then takes the first candidate:
+  task-owned pages (most recently opened first), then unowned pages.
+- `click`, `type_text`, `press_key` and `navigate` (actions) may act on an
+  unowned page, but **only when its `targetId` is passed explicitly**. Without a
+  `targetId` they never pick an unowned page implicitly: if the first candidate
+  is unowned they fail with `TARGET_ID_REQUIRED`. That keeps a concurrent task
+  from driving a tab the user — or another agent — already has open.
+- An empty candidate set is `TARGET_NOT_FOUND`.
+
+#### `snapshot`
+
+```json
+{
+  "taskId": "default",
+  "targetId": "...",
+  "url": "https://example.test/login",
+  "title": "Sign in",
+  "snapshotId": 3,
+  "elements": 12,
+  "total": 12,
+  "truncated": false,
+  "snapshot": "[12]<button type=\"submit\">Sign in</button>\n[13]<input ..."
+}
+```
+
+`snapshot` is idempotent with respect to the page: it only reads. `elements` is
+the number of serialized lines; `total` the candidate count before the budget.
+Indices in `snapshot` are the only valid `index` values for the next action.
+
+#### `click`
+
+```json
+{
+  "taskId": "default", "targetId": "...", "action": "click",
+  "index": 12, "tag": "button", "label": "Sign in",
+  "x": 42, "y": 24, "button": "left", "clickCount": 1,
+  "url": "...", "title": "..."
+}
+```
+
+`button` is `left` (default), `right` or `middle`; `clickCount` is clamped to
+1–3. After the click the broker waits `waitMs` (default
+`CHROME_ACTION_SETTLE_MS` = 300) before reading page facts.
+
+#### `type_text`
+
+```json
+{
+  "taskId": "default", "targetId": "...", "action": "type_text",
+  "index": 13, "mode": "typed", "tag": "input", "label": "Email",
+  "text": "ada@example.test", "cleared": true, "submitted": false,
+  "url": "...", "title": "..."
+}
+```
+
+`mode` is `typed` for input/textarea/contenteditable and `selected` for a
+`<select>`, where the result carries the chosen `value`/`label` instead of the
+input text. An unmatched option is `OPTION_NOT_FOUND` with
+`data: {options}`. Non-editable targets are `NOT_EDITABLE`.
+
+#### `press_key`
+
+```json
+{"taskId":"default","targetId":"...","action":"press_key","key":"Enter",
+ "modifiers":[],"url":"...","title":"..."}
+```
+
+Supported keys: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `Space`,
+`ArrowUp/Down/Left/Right`, `Home`, `End`, `PageUp`, `PageDown`, single
+letters/digits, optionally prefixed with `Alt+`, `Ctrl+`, `Meta+`, `Shift+`.
+Anything else is `INVALID_PARAMS`.
+
+#### `navigate`
+
+```json
+{"taskId":"default","targetId":"...","action":"navigate",
+ "requestedUrl":"https://...","url":"https://...","title":"...",
+ "loaded":true,"elapsedMs":412}
+```
+
+Only `http(s)`, `file:` and `about:` URLs are accepted. The broker invalidates
+the old isolated world, sends `Page.navigate`, then polls `document.readyState`
+until `complete`. Load failure is `NAVIGATION_FAILED`; exceeding `waitMs`
+(default `CHROME_NAVIGATE_WAIT_MS` = 10000) is `NAVIGATION_TIMEOUT`.
+Because the world is replaced, the next action needs a new `snapshot`.
+
 ## 5. Broker architecture requirements
 
 ### One channel, fair scheduling
@@ -238,8 +397,9 @@ owned by the task even if no tools register.
 - `WebMCP.toolsAdded` / `toolsRemoved` update the registry for `sessionId`.
 - `WebMCP.toolResponded` resolves exactly one waiter by `invocationId`, wherever
   it came from; nothing is broadcast to clients.
-- `Target.targetDestroyed` / `Inspector.detached` clean session, registry,
-  ownership, and reject that target's waiters with `TARGET_GONE`.
+- `Target.targetDestroyed` / `Target.detachedFromTarget` / `Inspector.detached`
+  clean session, registry, ownership and the browser-use page session, and
+  reject that target's waiters with `TARGET_GONE`.
 - WebSocket close rejects all pending CDP commands and waiters
   (`CHROME_DISCONNECTED`), clears sessions; tasks survive. The next request
   reconnects. Reconcile owned targets with `Target.getTargets` and drop targets
@@ -292,6 +452,11 @@ owned by the task even if no tools register.
 | `status` | `taskId`, `detail: "summary"\|"full"` | read-only; default task `default` |
 | `list_tools` | `targetId`, `url`, `taskId`, `waitMs`, `refresh` | scoped to task + unowned pages |
 | `invoke_tool` | `toolName`* , `input`, `targetId`, `url`, `frameId`, `taskId`, `waitMs` | `frameId` needs `targetId` |
+| `snapshot` | `targetId`, `url`, `taskId`, `maxElements` | perceive: numbered interactive elements |
+| `click` | `index`* , `targetId`, `url`, `taskId`, `button`, `clickCount`, `waitMs` | act: real mouse click |
+| `type_text` | `index`* , `text`* , `targetId`, `url`, `taskId`, `clear`, `submit`, `waitMs` | act: focus + type, or select an option |
+| `press_key` | `key`* , `targetId`, `url`, `taskId`, `waitMs` | act: key or chord |
+| `navigate` | `url`* , `targetId`, `taskId`, `waitMs` | act: navigate and wait for load |
 | `open_page` | `url`* , `taskId`, `isolated`, `waitMs` | creates a task-owned page |
 | `launch` | `url`, `timeoutMs` | starts Chrome if not reachable; never closes tasks |
 | `close` | `taskId` | closes that task's owned pages only |
@@ -303,6 +468,10 @@ owned by the task even if no tools register.
   concurrent task; reuse the `taskId`/`targetId` returned by `open_page`;
   `close` is task-scoped; `close_browser` shuts Chrome down and is only for an
   explicit user request.
+- They must also describe the browser-use loop: call `snapshot` to perceive,
+  act with `click`/`type_text`/`press_key`/`navigate` using indices from the
+  latest snapshot only, and take a new snapshot after every action or
+  navigation. Prefer WebMCP tools when the page exposes them.
 - Error result: MCP `isError: true` with `Error: <message>`; include the broker
   error code in the message when present (`Error [CODE]: message`).
 
@@ -318,6 +487,9 @@ owned by the task even if no tools register.
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` port wait |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | first-discovery max settle |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | default invocation wait |
+| `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | default `snapshot` element budget (cap 2000) |
+| `CHROME_ACTION_SETTLE_MS` | `300` | settle after click/type/press before reading page facts |
+| `CHROME_NAVIGATE_WAIT_MS` | `10000` | default `navigate` load wait |
 | `CHROME_WEBMCP_BROKER_IDLE_MS` | `600000` | idle exit |
 | `CHROME_WEBMCP_START_WAIT_MS` | `12000` | client waits for a spawned broker |
 | `CHROME_WEBMCP_MAX_INFLIGHT` | `32` | global CDP in-flight cap |
@@ -332,6 +504,23 @@ owned by the task even if no tools register.
 `TOOL_NOT_FOUND`, `TOOL_TIMEOUT`, `CONFIRM_REQUIRED`, `BROWSER_LAUNCH_FAILED`,
 `BROKER_UNAVAILABLE`, `IPC_TIMEOUT`, `IPC_CLOSED`, `METHOD_NOT_FOUND`, `INTERNAL`.
 
+Browser-use additions:
+
+| code | raised by | meaning |
+|---|---|---|
+| `PAGE_NOT_READABLE` | attach / isolated world | the target cannot run page scripts (`chrome://`, devtools, etc.) |
+| `TARGET_ID_REQUIRED` | `click` / `type_text` / `press_key` / `navigate` | the resolved page is unowned and no explicit `targetId` was given |
+| `PAGE_EVALUATION_FAILED` | `Runtime.evaluate` | the page script threw during snapshot/action |
+| `PAGE_CONTEXT_LOST` | any action | the isolated world was destroyed (navigation/reload); take a new snapshot |
+| `REF_NOT_FOUND` | `click` / `type_text` | the index does not belong to the latest snapshot |
+| `REF_STALE` | `click` / `type_text` | the element was removed from the DOM |
+| `ELEMENT_NOT_VISIBLE` | `click` | zero box or outside the viewport |
+| `ELEMENT_COVERED` | `click` | another element is on top at the click point |
+| `NOT_EDITABLE` | `type_text` | target is not an input, textarea or contenteditable |
+| `OPTION_NOT_FOUND` | `type_text` | no `<option>` matches; `data.options` lists them |
+| `NAVIGATION_FAILED` | `navigate` | Chrome rejected the URL (`errorText`) |
+| `NAVIGATION_TIMEOUT` | `navigate` | `readyState` did not reach `complete` within `waitMs` |
+
 ## 9. Test hooks
 
 - The broker must accept `CHROME_CDP_PORT` pointing at a fake CDP server. The
@@ -340,6 +529,14 @@ owned by the task even if no tools register.
   `Target.createTarget`, `Target.closeTarget`,
   `Target.disposeBrowserContext`, `Target.createBrowserContext`, `Browser.close`,
   and the `WebMCP` domain.
+- For browser-use it must also implement `Target.getTargetInfo`,
+  `Target.targetDestroyed`, `Page.getFrameTree`, `Page.createIsolatedWorld`,
+  `Page.navigate`, `Runtime.evaluate` and
+  `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` / `Input.insertText`.
+  The fake recognizes the page scripts by their leading marker comments
+  (`MARKERS` in `lib/page-scripts.mjs`) and returns canned values, so tests can
+  assert the real CDP traffic (coordinates, key events, ordering) without a
+  browser.
 - Tests use unique `CHROME_WEBMCP_IPC` + `CHROME_WEBMCP_STATE_DIR` so they never
   touch a user's broker or Chrome.
 - The broker API must be usable from a test that imports `broker.mjs`

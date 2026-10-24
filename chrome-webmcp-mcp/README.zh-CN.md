@@ -20,8 +20,9 @@ Chrome 155 **没有内置 MCP 服务器**，它的 MCP 能力是 **WebMCP**，�
 | 网页侧 API | `document.modelContext` | `registerTool` / `getTools` / `executeTool` / `ontoolchange` |
 | 调试侧协议 | CDP 域 `WebMCP`（**frame 级**） | `WebMCP.enable`；事件 `toolsAdded` / `toolsRemoved` / `toolInvoked` / `toolResponded`；命令 `invokeTool` |
 
-本目录把 CDP 域包成 7 个标准 MCP 工具。`bridge.mjs` 零第三方依赖，
-只用 Node 内置模块 + 全局 `fetch` / `WebSocket`（Node ≥ 22）。
+本目录把 CDP 域包成 12 个标准 MCP 工具：7 个 WebMCP 工具 + 5 个浏览器操作
+（Browser Use）工具，用于页面没有可用 WebMCP 工具的场景。`bridge.mjs` 零第三方
+依赖，只用 Node 内置模块 + 全局 `fetch` / `WebSocket`（Node ≥ 22）。
 
 > ⚠️ 网页侧 API 是 **`document.modelContext`**，不是 `navigator.modelContext`。
 
@@ -92,6 +93,9 @@ profile 的 `node_modules` 解析（`dsh plugin add link:` 安装后一定存在
 - 并发任务请各用一个独立 `taskId`，并复用 `open_page` 返回值里的 `taskId`；
 - `open_page` 打开的页面**归该任务所有**；
 - `list_tools` / `invoke_tool` 的候选页面 = **本任务拥有的页面 + 用户自己打开的页面（无主页面）**；
+- 无主页面可以被**感知**（`snapshot` 可隐式选页），但**变更类动作**（`click` / `type_text` /
+  `press_key` / `navigate`）必须显式传该页的 `targetId`，否则返回 `TARGET_ID_REQUIRED`——
+  并发任务不会静默接管用户正在用的标签页；
 - **其他任务的页面不可见**；拿别人的 `targetId` 直接用会返回 `TARGET_OTHER_TASK`；
 - `open_page.isolated: true` 会为该任务创建独立 Chrome browser context
   （独立 cookie / storage），`close` 时一并销毁；
@@ -139,10 +143,36 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 | `status` | `taskId?`、`detail?: summary\|full` | 只读快照：Chrome 可达性/版本、broker 信息、本任务页面；不会 attach 页面 |
 | `list_tools` | `targetId?`、`url?`、`taskId?`、`waitMs?`、`refresh?` | 列出本任务可用页面上的 WebMCP 工具 |
 | `invoke_tool` | `toolName`(必填)、`input?`、`targetId?`、`url?`、`frameId?`、`taskId?`、`waitMs?` | 调用工具；`frameId` 必须配 `targetId` |
+| `snapshot` | `targetId?`、`url?`、`taskId?`、`maxElements?` | **感知**：把可见可交互元素序列化成带数字索引的 `snapshot` 文本 |
+| `click` | `index`(必填)、`targetId?`、`url?`、`taskId?`、`button?`、`clickCount?`、`waitMs?` | **行动**：按索引发送真实鼠标点击 |
+| `type_text` | `index`、`text`(必填)、`targetId?`、`url?`、`taskId?`、`clear?`、`submit?`、`waitMs?` | **行动**：聚焦输入框并输入；对 `<select>` 按文本选选项 |
+| `press_key` | `key`(必填)、`targetId?`、`url?`、`taskId?`、`waitMs?` | **行动**：发送 `Enter`、`Tab`、方向键或 `Control+A` 等组合键 |
+| `navigate` | `url`(必填)、`targetId?`、`taskId?`、`waitMs?` | **行动**：当前标签页导航并等待 `document.readyState === "complete"` |
 | `open_page` | `url`(必填)、`taskId?`、`isolated?`、`waitMs?` | 打开任务拥有的页面并返回已注册工具 |
 | `launch` | `url?`、`timeoutMs?` | 端口未监听时按 WebMCP 参数拉起 Chrome |
 | `close` | `taskId?` | 关闭本任务拥有的页面并销毁其隔离 context |
 | `close_browser` | `confirm: true` | 关闭整个 Chrome；仅限用户明确要求 |
+
+### 5.1 浏览器操作循环：感知 → 思考 → 行动
+
+页面没有暴露所需 WebMCP 工具时，Agent 用下面这组原语复刻 Trae Browser Agent
+的工作方式。**“思考”由模型完成，桥接器只负责“感知”和“行动”**：
+
+1. **感知**：调用 `snapshot`，得到类似下面的编号列表：
+   ```
+   [12]<button type="submit">Sign in</button>
+   [13]<input type="text" name="email" placeholder="Email" value="" />
+   [14]<select name="plan" value="pro" options="Basic | Pro" />
+   ```
+2. **思考**：模型结合任务决定点哪个索引。
+3. **行动**：`click` / `type_text` / `press_key` / `navigate`。底层发送真实
+   CDP 鼠标/键盘事件，悬停菜单、框架事件、表单提交都与真人操作一致。
+4. **再感知**：每次行动或导航后重新调用 `snapshot`。
+
+索引是**元素句柄**，不是易碎的 CSS 选择器：页面脚本把引用表保存在私有
+**isolated world** 中，因此不会向页面添加 DOM 属性、样式或全局变量。索引按页面
+单调递增，旧快照的索引会明确返回 `REF_NOT_FOUND`，不会误点到别的元素。
+页面导航后 isolated world 被销毁，必须重新 `snapshot`。
 
 页面声明的 `description` / `inputSchema` 属于**不可信数据**：只呈现、不隐式执行；
 只有 Agent 显式调用 `invoke_tool` 才会执行。
@@ -176,6 +206,9 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次发现工具的 settle 上限 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 调用结果默认等待 |
+| `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | `snapshot` 默认元素预算（工具参数 `maxElements` 可覆盖，上限 2000） |
+| `CHROME_ACTION_SETTLE_MS` | `300` | click/type/press 后读取页面信息前的等待 |
+| `CHROME_NAVIGATE_WAIT_MS` | `10000` | `navigate` 默认加载等待 |
 | `CHROME_WEBMCP_BROKER_IDLE_MS` | `600000` | broker 空闲退出 |
 | `CHROME_WEBMCP_START_WAIT_MS` | `12000` | 客户端等待新 broker 上线 |
 | `CHROME_WEBMCP_MAX_INFLIGHT` | `32` | 全局 CDP 在飞上限 |
@@ -202,6 +235,12 @@ mcp__chrome__open_page  url=file:///<REPO>/webmcp-test.html  taskId=demo
 
 mcp__chrome__invoke_tool  toolName=add_numbers  input={a:20,b:22}  taskId=demo
   -> { status: "Completed", output: { sum: 42 }, invocationId: "..." }
+
+mcp__chrome__snapshot  taskId=demo  targetId=<id>
+  -> { elements: 2, snapshot: "[0]<button>Submit</button>..." }
+
+mcp__chrome__click  taskId=demo  targetId=<id>  index=0
+  -> { action: "click", url: "...", title: "..." }
 
 mcp__chrome__close  taskId=demo
   -> { taskId: "demo", closedTargetIds: [...], disposedContext: false }
@@ -258,6 +297,16 @@ node --test --experimental-test-isolation=none test/broker.test.mjs test/mcp.tes
 Chrome 限制：`Cannot return tool results after a cross-origin navigation`。
 工具调用期间不要让页面跳转到别的源。
 
+### 9.6 浏览器操作的边界
+
+- `snapshot` 会穿透**所有**开放 shadow root（不要求宿主自身可交互；普通容器、自定义元素、
+  `tabindex="-1"` 宿主都算），但 closed shadow root 与 iframe（含同源 iframe）不可见；
+- 元素被移除、页面导航后，旧索引会返回 `REF_NOT_FOUND` / `PAGE_CONTEXT_LOST`，
+  重新 `snapshot` 即可；
+- 文件选择框、权限弹窗、由真实点击打开的 `<select>` 原生下拉属于浏览器 UI，
+  CDP 无法接管；对 `<select>` 请用 `type_text` 按文本选值；
+- 元素被遮挡时 `click` 返回 `ELEMENT_COVERED`，先处理遮挡层再重试。
+
 ---
 
 ## 10. 文件清单
@@ -270,6 +319,8 @@ Chrome 限制：`Cannot return tool results after a cross-origin navigation`。
 | [lib/ipc.mjs](lib/ipc.mjs) | 换行 JSON IPC（pipe/socket/TCP） |
 | [lib/cdp.mjs](lib/cdp.mjs) | CDP WebSocket + 公平调度器 |
 | [lib/sessions.mjs](lib/sessions.mjs) | attach / enable / 工具注册 / 结果等待 |
+| [lib/pages.mjs](lib/pages.mjs) | 浏览器操作页面会话、isolated world、输入与导航 |
+| [lib/page-scripts.mjs](lib/page-scripts.mjs) | 注入页面的 snapshot/click/type 脚本与数字索引 |
 | [lib/tasks.mjs](lib/tasks.mjs) | 任务命名空间与页面归属 |
 | [cordis.patch.yml](cordis.patch.yml) | 可移植 bundle 补丁（无绝对路径） |
 | [install.mjs](install.mjs) | 一键安装器 |
@@ -284,9 +335,11 @@ Chrome 限制：`Cannot return tool results after a cross-origin navigation`。
 
 ## 11. 安全与限制
 
-- 桥接器只做**只读发现 + 按需调用**，不会因为页面加载而自动执行工具；
-- 页面元数据视为不可信输入；
-- 只覆盖 WebMCP；`Browser.*`、`Page.*` 等通用 CDP 能力未暴露给模型；
+- 工具发现是**只读**的，不会因为页面加载而自动执行工具；
+- 浏览器操作只在模型显式调用 `click`/`type_text`/`press_key`/`navigate` 时执行，
+  且只在任务可见的页面上执行；页面内容仍视为不可信输入；
+- 不暴露任意 `Runtime.evaluate`；注入脚本固定、在 isolated world 中运行，不执行页面提供的代码；
+- 只覆盖 WebMCP 与上述浏览器操作原语；`Browser.*` 等通用 CDP 能力未暴露给模型；
 - 本地 IPC 端点默认仅当前用户可访问；`tcp://` 仅供测试；
 - `document.domain` 页面无法使用 WebMCP（Chrome 限制）；
 - `invoke_tool` 超时只停止等待，页面侧调用可能继续完成（本版本无取消命令）。

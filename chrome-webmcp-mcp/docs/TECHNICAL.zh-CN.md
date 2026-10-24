@@ -32,7 +32,7 @@
 
 ## 1. 摘要
 
-Chrome 155 没有内置的 MCP 服务器，它的 MCP 能力是网页侧 **WebMCP**（`document.modelContext`）加调试侧 **CDP `WebMCP` 域**。本插件把后者包装成 7 个标准 MCP 工具，让 DSH 里的 Agent 能发现并调用网页注册的工具。
+Chrome 155 没有内置的 MCP 服务器，它的 MCP 能力是网页侧 **WebMCP**（`document.modelContext`）加调试侧 **CDP `WebMCP` 域**。本插件把后者包装成 12 个标准 MCP 工具（7 个 WebMCP 工具 + 5 个浏览器操作工具），让 DSH 里的 Agent 能发现并调用网页注册的工具；页面没有可用 WebMCP 工具时，Agent 也可以用浏览器操作工具复刻 Trae Browser Agent 的“感知 → 思考 → 行动”循环。
 
 v2 在 v1 的基础上解决了四个工程问题：
 
@@ -144,7 +144,7 @@ v1 是每个 MCP 服务器进程直接打开一条 CDP WebSocket。它在单任�
 
 | 进程 | 数量 | 职责 | 生命周期 |
 |---|---|---|---|
-| `bridge.mjs`（MCP 模式） | 每个 MCP host 一个 | stdio MCP 协议、7 个工具、broker 客户端 | 随 MCP host 启动；stdin 关闭/信号时退出 |
+| `bridge.mjs`（MCP 模式） | 每个 MCP host 一个 | stdio MCP 协议、12 个工具、broker 客户端 | 随 MCP host 启动；stdin 关闭/信号时退出 |
 | `bridge.mjs --broker` | 每个 CDP 端口一个 | 独占 CDP、任务/会话/注册表、IPC 服务 | 懒启动；空闲退出；Chrome 不受影响 |
 | Chrome | 每端口一个 | 页面与 WebMCP 执行 | 由用户或 `launch` 启动 |
 
@@ -156,6 +156,10 @@ v1 是每个 MCP 服务器进程直接打开一条 CDP WebSocket。它在单任�
 - 每个 target 的 session 由 `SessionBook.ensuring` 单飞创建；断开/关闭时清理。
 - 每个 target 的归属由 `TaskBook.owners` 记录；target 消失时自动回收。
 - 工具调用等待者由 `waiters: invocationId → waiter` 管理；超时/断线时统一拒绝。
+- 浏览器操作使用独立的 `PageBook` session 和 `Page.createIsolatedWorld`
+  （world 名 `dsh-browser-use`）；页面 DOM/样式/全局变量不被修改。
+- 引用表只存在于该 isolated world 内；索引按页面单调递增，导航后旧索引全部
+  失效并返回 `REF_NOT_FOUND`。
 
 ### 4.4 一次调用的数据流
 
@@ -182,6 +186,31 @@ broker.mjs → IPC 结果 → bridge.mjs → MCP text content → Agent
 ```
 
 注意：结果事件可能早于 `{invocationId}` 应答到达。`SessionBook` 用 `recent` 表暂存这类响应，拿到 invocationId 后立即消费，避免竞态丢结果。
+
+浏览器操作（Browser Use）走独立的 `PageBook`，不依赖 WebMCP 注册表：
+
+```text
+Agent
+  │ snapshot {taskId, targetId}
+  ▼
+broker.mjs → PageBook.ensure(target)
+  ├─ Target.attachToTarget {flatten:true}
+  ├─ Page.createIsolatedWorld (name=dsh-browser-use)
+  └─ Runtime.evaluate(快照脚本) → "[12]<button>…</button>\n[13]<input … />"
+  ▼
+Agent（思考）选择 index
+  │ click / type_text / press_key / navigate
+  ▼
+broker.mjs
+  ├─ Runtime.evaluate(动作脚本) → 滚动、命中测试、返回坐标
+  └─ Input.dispatchMouseEvent / Input.dispatchKeyEvent / Input.insertText
+  ▼
+等待 settle → 读取 target 事实 → 返回 url/title
+```
+
+关键差异：WebMCP 工具由页面自己实现并执行；浏览器操作由桥接器在 isolated
+world 中定位元素、再通过 CDP 发送**真实输入事件**，因此不依赖易碎的 CSS 选择器，
+也不会触发 `element.click()` 与真实用户行为的差异。
 
 ---
 
@@ -295,6 +324,9 @@ plugin_manager set_bundle target=dsh-chrome-webmcp enabled=true    # 恢复
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 | 慢机器可调大 |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次工具发现的 settle 上限 | 页面工具注册慢时调大 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 默认调用等待 | 长任务页面调大 |
+| `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | `snapshot` 默认元素预算（上限 2000） | 页面元素很多时调大；会增大返回文本 |
+| `CHROME_ACTION_SETTLE_MS` | `300` | click/type/press 后读取页面事实前的等待 | SPA 动画慢时调大 |
+| `CHROME_NAVIGATE_WAIT_MS` | `10000` | `navigate` 默认加载等待 | 慢站点调大 |
 | `CHROME_WEBMCP_BROKER_IDLE_MS` | `600000`（10 分钟） | 无客户端后 broker 退出 | 频繁启停可调大 |
 | `CHROME_WEBMCP_START_WAIT_MS` | `12000` | 客户端等待新建 broker | 慢磁盘可调大 |
 | `CHROME_WEBMCP_MAX_INFLIGHT` | `32` | 全局 CDP 在飞上限 | 页面很多时可调大 |
@@ -346,7 +378,7 @@ pages:      targetId → targetInfo    # 来自 Target.getTargets / 事件
 |---|---|---|
 | 本任务 `open_page` | 本任务 | 否（直接给 targetId 也会被拒绝） |
 | 其他任务 `open_page` | 其他任务 | 否 |
-| 用户/其他软件打开 | 无主 | 是（只读使用；`close` 不会关） |
+| 用户/其他软件打开 | 无主 | 是（感知可隐式选页；`click`/`type_text`/`press_key`/`navigate` 须显式 targetId） |
 
 **归属持久化**：`owners`/`tasks` 会同步写入状态目录的 `ownership.json`（原子替换，失败只记日志）。broker 空闲退出、崩溃或升级后重新启动时，会先加载该文件，再在首次 `Target.getTargets` 时丢弃已不存在的 target。Chrome 本身重启后 targetId 全部变化，旧归属会被清空；`close_browser` 会清空并持久化空快照。
 
@@ -491,10 +523,15 @@ settle 规则（`#settle`）：
 | 1 | `status` | `taskId?`、`detail?: summary\|full` | `{task, otherTasks, chrome, broker, port, ipc}` |
 | 2 | `list_tools` | `taskId?`、`targetId?`、`url?`、`waitMs?`、`refresh?` | `{taskId, candidates, pages[], skipped}` |
 | 3 | `invoke_tool` | `toolName`、`input?`、`taskId?`、`targetId?`、`url?`、`frameId?`、`waitMs?` | `{taskId, toolName, targetId, frameId, status, output, invocationId, durationMs, ambiguous}` |
-| 4 | `open_page` | `url`、`taskId?`、`isolated?`、`waitMs?` | `{taskId, targetId, url, title, isolated, tools[]}` |
-| 5 | `launch` | `url?`、`timeoutMs?` | `{launched, alreadyRunning, pid?, port, userDataDir?, browser?}` |
-| 6 | `close` | `taskId?` | `{taskId, closedTargetIds[], disposedContext}` |
-| 7 | `close_browser` | `confirm`（必须 `true`） | `{closed:true}` |
+| 4 | `snapshot` | `taskId?`、`targetId?`、`url?`、`maxElements?` | `{taskId, targetId, url, title, snapshotId, elements, total, truncated, snapshot}` |
+| 5 | `click` | `index`、`taskId?`、`targetId?`、`url?`、`button?`、`clickCount?`、`waitMs?` | `{taskId, targetId, action, index, tag, label, x, y, button, clickCount, url, title}` |
+| 6 | `type_text` | `index`、`text`、`taskId?`、`targetId?`、`url?`、`clear?`、`submit?`、`waitMs?` | `{taskId, targetId, action, index, mode, tag, label, text/value, cleared/submitted, url, title}` |
+| 7 | `press_key` | `key`、`taskId?`、`targetId?`、`url?`、`waitMs?` | `{taskId, targetId, action, key, modifiers, url, title}` |
+| 8 | `navigate` | `url`、`taskId?`、`targetId?`、`waitMs?` | `{taskId, targetId, action, requestedUrl, url, title, loaded, elapsedMs}` |
+| 9 | `open_page` | `url`、`taskId?`、`isolated?`、`waitMs?` | `{taskId, targetId, url, title, isolated, tools[]}` |
+| 10 | `launch` | `url?`、`timeoutMs?` | `{launched, alreadyRunning, pid?, port, userDataDir?, browser?}` |
+| 11 | `close` | `taskId?` | `{taskId, closedTargetIds[], disposedContext}` |
+| 12 | `close_browser` | `confirm`（必须 `true`） | `{closed:true}` |
 
 补充：
 
@@ -502,6 +539,14 @@ settle 规则（`#settle`）：
 - 未给 `targetId` 时，`invoke_tool` 先在本任务页面（最近打开优先）中按工具名查找，再查无主页面；多个匹配时 `ambiguous:true`，使用第一个。
 - `open_page` 只接受 `http(s)`、`file`、`about` URL。
 - `close_browser` 的 `confirm` 在 JSON Schema 中为 `const true`，broker 也会二次校验。
+- 浏览器操作的页面解析：显式 `targetId` 必须属于本任务或是无主页面（否则 `TARGET_OTHER_TASK`）；
+  未给 `targetId` 时，`snapshot` 按“本任务最近打开的页面 → 无主页面”隐式选页，而
+  `click` / `type_text` / `press_key` / `navigate` 一旦落到无主页面就返回 `TARGET_ID_REQUIRED`
+  （必须显式点名，避免并发任务接管用户正开着的标签页）；`navigate` 只按 `targetId` 定位。
+- `snapshot` 返回的 `index` 只对**最新一次快照**有效；每次行动或导航后都要重新
+  `snapshot`，旧索引返回 `REF_NOT_FOUND`。
+- `type_text` 对 `<select>` 返回 `mode:"selected"`，只需文本匹配选项，不会打开
+  原生下拉菜单；`clear` 默认 `true`，`submit` 默认 `false`。
 
 ### 9.3 broker IPC 协议
 
@@ -522,6 +567,11 @@ settle 规则（`#settle`）：
 | `status` | `taskId?`、`detail?` | 任务/Chrome/broker 快照 |
 | `list_tools` | `taskId?`、`targetId?`、`url?`、`waitMs?`、`refresh?` | 工具列表 |
 | `invoke_tool` | `taskId?`、`toolName`、`input?`、`targetId?`、`url?`、`frameId?`、`waitMs?` | 调用工具 |
+| `snapshot` | `taskId?`、`targetId?`、`url?`、`maxElements?` | 感知：编号元素列表 |
+| `click` | `taskId?`、`index`、`targetId?`、`url?`、`button?`、`clickCount?`、`waitMs?` | 行动：真实鼠标点击 |
+| `type_text` | `taskId?`、`index`、`text`、`targetId?`、`url?`、`clear?`、`submit?`、`waitMs?` | 行动：输入或选择 `<select>` |
+| `press_key` | `taskId?`、`key`、`targetId?`、`url?`、`waitMs?` | 行动：按键/组合键 |
+| `navigate` | `taskId?`、`url`、`targetId?`、`waitMs?` | 行动：导航并等待加载 |
 | `open_page` | `taskId?`、`url`、`isolated?`、`waitMs?` | 创建任务页面 |
 | `close_task` | `taskId?` | 关闭任务页面 |
 | `close_browser` | `confirm:true` | 关闭 Chrome |
@@ -551,6 +601,30 @@ broker                          Chrome
   │         resolve waiter         │
 ```
 
+浏览器操作序列（与 WebMCP 相互独立）：
+
+```text
+broker                                   Chrome
+  │ Target.attachToTarget {flatten}        │
+  │───────────────────────────────────────>│
+  │<───────────────────────────────────────│ {sessionId}
+  │ Page.createIsolatedWorld               │
+  │───────────────────────────────────────>│
+  │<───────────────────────────────────────│ {executionContextId}
+  │ Runtime.evaluate(snapshot, ctx)        │
+  │───────────────────────────────────────>│
+  │<───────────────────────────────────────│ {snapshotId, text, elements}
+  │ Runtime.evaluate(click, ctx)           │
+  │───────────────────────────────────────>│
+  │<───────────────────────────────────────│ {ok:true, x, y}
+  │ Input.dispatchMouseEvent ×3            │
+  │───────────────────────────────────────>│
+  │ Page.navigate                          │
+  │───────────────────────────────────────>│  (isolated world 被销毁)
+  │ Runtime.evaluate(readyState, 新 ctx)   │
+  │───────────────────────────────────────>│
+```
+
 ### 9.5 错误码总表
 
 | 错误码 | 触发条件 | 典型处理 |
@@ -566,6 +640,18 @@ broker                          Chrome
 | `FRAME_WITHOUT_TARGET` | 给了 frameId 没给 targetId | 两个一起给 |
 | `TOOL_NOT_FOUND` | 候选页面都没有该工具 | 检查注册/taskId |
 | `TOOL_TIMEOUT` | 等待 `toolResponded` 超时 | 增大 `waitMs`/检查页面 |
+| `PAGE_NOT_READABLE` | 目标页面不能执行脚本（`chrome://`、devtools） | 换普通网页页面 |
+| `TARGET_ID_REQUIRED` | 变更类动作解析到无主页面但没给 `targetId` | 显式传该页 `targetId`，或先 `open_page` |
+| `PAGE_EVALUATION_FAILED` | 页面脚本异常 | 重新 `snapshot`；检查页面是否已变化 |
+| `PAGE_CONTEXT_LOST` | isolated world 被销毁（导航/重载） | 重新 `snapshot` 并重试 |
+| `REF_NOT_FOUND` | 索引不属于最新快照 | 先 `snapshot` 再按新索引操作 |
+| `REF_STALE` | 元素已从 DOM 移除 | 重新 `snapshot` |
+| `ELEMENT_NOT_VISIBLE` | 元素零尺寸或在视口外 | 滚动/展开菜单后再 `snapshot` |
+| `ELEMENT_COVERED` | 点击点被其他元素遮挡 | 先关闭弹层/等待动画结束 |
+| `NOT_EDITABLE` | `type_text` 目标不是输入框/可编辑区 | 选 `input`/`textarea`/`contenteditable` |
+| `OPTION_NOT_FOUND` | `<select>` 没有匹配选项 | 按 `data.options` 重新选择文本 |
+| `NAVIGATION_FAILED` | Chrome 拒绝该 URL | 检查 URL/scheme |
+| `NAVIGATION_TIMEOUT` | `readyState` 未在 `waitMs` 内到 `complete` | 调大 `CHROME_NAVIGATE_WAIT_MS` 或 `waitMs` |
 | `CONFIRM_REQUIRED` | `close_browser` 未传 confirm:true | 显式确认 |
 | `BROWSER_LAUNCH_FAILED` | 找不到 Chrome 或端口未开 | 检查 `CHROME_PATH`/日志 |
 | `BROKER_UNAVAILABLE` | 客户端等不到 broker | 看 `broker.log`/手动启动 |
@@ -580,13 +666,15 @@ broker                          Chrome
 
 | 文件 | 行数（约） | 职责 |
 |---|---|---|
-| `lib/config.mjs` | 113 | 环境变量、默认值、Chrome 探测、路径 |
+| `lib/config.mjs` | 136 | 环境变量、默认值、Chrome 探测、路径 |
 | `lib/ipc.mjs` | 302 | 换行 JSON、pipe/socket/TCP、客户端/服务端、错误序列化 |
 | `lib/cdp.mjs` | 333 | CDP WebSocket、版本缓存、公平调度器、事件分发 |
 | `lib/sessions.mjs` | 341 | target attach、enable、注册表、settle、invoke waiter |
-| `lib/tasks.mjs` | 302 | task/页面归属、隔离 context、candidates、close/status |
-| `broker.mjs` | 498 | broker 生命周期、IPC handler、launch、空闲退出 |
-| `bridge.mjs` | 715 | MCP stdio、7 工具、broker 生命周期客户端 |
+| `lib/tasks.mjs` | 435 | task/页面归属、隔离 context、candidates、close/status |
+| `lib/pages.mjs` | 490 | 浏览器操作会话：attach、isolated world、evaluate、鼠标/键盘、导航 |
+| `lib/page-scripts.mjs` | 461 | 页面侧快照/点击/输入/ready 脚本（DOM 索引序列化） |
+| `broker.mjs` | 693 | broker 生命周期、IPC handler、launch、空闲退出 |
+| `bridge.mjs` | 901 | MCP stdio、12 工具、broker 生命周期客户端 |
 | `install.mjs` | 309 | 一键安装器 |
 | `scripts/check-sensitive.mjs` | 334 | 敏感信息扫描 |
 
@@ -644,11 +732,42 @@ broker                          Chrome
 
 ### 10.7 `bridge.mjs`
 
-- 工具定义 `TOOLS`：名称、broker 方法、参数白名单、Schema、描述。
+- 工具定义 `TOOLS`：12 个工具的名称、broker 方法、参数白名单、Schema、描述。
+- `INSTRUCTIONS`：说明 taskId/页面归属、`close` 作用域、`close_browser` 风险，以及
+  浏览器操作的“感知 → 行动 → 再感知”循环。
 - `ensureBroker()`：单飞连接；失败则 `spawn(process.execPath, [BRIDGE_ENTRY,'--broker'], {detached,stdio:'ignore'})`，每 200ms 重试，上限 `BROKER_START_WAIT_MS`。
 - `brokerRequest()`：每次工具调用一个 IPC 请求；**从不自动重试**（避免重复执行变更）。
 - `handleMessage()`：MCP 方法分发；通知忽略；错误转为 `isError` 内容。
 - `startStdioServer(input, output, {exitOnClose})`：生产用 `process.stdin/stdout`；测试可注入 PassThrough。
+
+### 10.8 `lib/pages.mjs`
+
+- `PageBook.ensure()`：单飞 attach（flatten）+ `Page.createIsolatedWorld`；缓存
+  `contextId`；attach 成功但建 world 失败时保留 session、置空 context，下次重试。
+- `evaluate()`：`Runtime.evaluate` 带 `contextId`、`returnByValue`、`awaitPromise`；
+  检测 context 失效后单次重试，仍失败则 `PAGE_CONTEXT_LOST`。
+- `snapshot()`：执行快照脚本，返回 `{snapshotId,url,title,total,elements,truncated,text}`。
+- `click()`：执行点击脚本拿到坐标后，发 `mouseMoved` + `mousePressed`/`mouseReleased`；
+  支持 left/right/middle 与 1–3 次点击。
+- `typeText()`：执行输入脚本；`<select>` 直接返回 `selected`；文本输入先 `Control+A`
+  （macOS `Meta+A`），再 `Input.insertText`，可选 Enter。
+- `pressKey()`：解析 `Enter/Tab/方向键/空格/字母数字` 与 `Alt/Ctrl/Meta/Shift` 组合，
+  发 `rawKeyDown` + 可选 `char` + `keyUp`。
+- `navigate()`：失效旧 context → `Page.navigate` → 轮询 `readyState` 直到 `complete`。
+- `targetFacts()`：`Target.getTargetInfo` 读取最新 url/title。
+
+### 10.9 `lib/page-scripts.mjs`
+
+- `MARKERS`：四个脚本开头的标记注释，fake CDP 测试据此识别脚本。
+- `snapshotExpression()`：遍历 document 与开放的 shadow root，过滤不可见元素，
+  生成 `[index]<tag ...>label</tag>`；引用表保存在 isolated world 的非枚举
+  `globalThis.__dshBrowserUse`，索引单调递增。
+- `clickExpression()`：校验引用 → `scrollIntoView` → 等两帧 → 取中心点 → composed
+  `elementFromPoint` 命中测试（下钻 shadow root）→ 返回坐标或明确失败原因。
+- `typeExpression()`：`<select>` 按 value/精确 label/包含 label 匹配并派发
+  `input`+`change`；文本字段校验可编辑性、聚焦、按 `clear` 决定是否全选。
+- `readyExpression()`：返回 `document.readyState`，供导航轮询。
+- 所有脚本都在 isolated world 中运行，不向页面添加属性、样式或全局变量。
 
 ---
 
@@ -660,8 +779,8 @@ broker                          Chrome
 
 ```js
 {
-  name: 'navigate',
-  method: 'navigate',
+  name: 'my_action',
+  method: 'my_action',
   paramNames: ['taskId', 'targetId', 'url'],
   description: '...',
   inputSchema: { /* JSON Schema, additionalProperties:false */ },
@@ -724,9 +843,9 @@ const server = startStdioServer(inputPassThrough, outputPassThrough, { exitOnClo
 
 | 文件 | 用例数 | 覆盖 |
 |---|---|---|
-| `test/broker.test.mjs` | 13 | 任务隔离、隔离 context、跨任务拒绝、并发 300ms 调用、`close_task` 作用域、关闭失败保留归属、Chrome down 的 `status`、归属跨 broker 重启、缓存 vs refresh、错误码、非法参数连接存活、真实 broker 子进程空闲退出 |
+| `test/broker.test.mjs` | 22 | 任务隔离、隔离 context、跨任务拒绝、并发 300ms 调用、`close_task` 作用域、关闭失败保留归属、Chrome down 的 `status`、归属跨 broker 重启、缓存 vs refresh、错误码、非法参数连接存活、真实 broker 子进程空闲退出；浏览器操作的快照序列化、跨任务拒绝、点击坐标、输入/清空/提交、`<select>`、按键、导航、`REF_NOT_FOUND` 文案、`close_task` 清理 |
 | `test/config.test.mjs` | 1 | 状态目录/隔离 profile 按端口区分 |
-| `test/mcp.test.mjs` | 5 | initialize、7 工具、open→invoke→close 往返、`[CODE]` 错误文本、stdout 纯 JSON-RPC |
+| `test/mcp.test.mjs` | 6 | initialize、12 工具契约、open→invoke→close 往返、`[CODE]` 错误文本、stdout 纯 JSON-RPC、snapshot→click→type_text→press_key→navigate 循环往返 |
 | `test/live.test.mjs` | 1（默认 skip） | 真实 Chrome + `webmcp-test.html`，`add_numbers {20,22}` → 42 |
 
 ### 12.2 命令
@@ -734,7 +853,7 @@ const server = startStdioServer(inputPassThrough, outputPassThrough, { exitOnClo
 ```sh
 cd chrome-webmcp-mcp
 node --test --experimental-test-isolation=none "test/*.test.mjs"
-# tests 20 / pass 19 / fail 0 / skipped 1
+# tests 30 / pass 29 / fail 0 / skipped 1
 ```
 
 真实 Chrome 冒烟：
@@ -768,6 +887,11 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 - [x] 两个 300ms 并发调用总耗时 < 500ms。
 - [x] `refresh:true` 只增加一次 enable。
 - [x] broker 空闲退出后 Chrome 仍存活。
+- [x] `snapshot` 返回带索引的紧凑列表，`elements`/`total`/`truncated` 标注正确。
+- [x] `click` 只发送真实鼠标事件，坐标来自 isolated world 命中测试。
+- [x] `type_text` 支持清空/提交，`<select>` 返回 `selected`。
+- [x] `press_key` 支持方向键与 `Control+A`；未知键返回 `INVALID_PARAMS`。
+- [x] `navigate` 后旧索引返回 `REF_NOT_FOUND`，新快照可用。
 - [x] 敏感信息扫描 clean。
 
 ---
@@ -783,6 +907,11 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 | `document.modelContext` 为 `undefined` | 缺 Blink runtime feature | 加 `--enable-blink-features=WebMCP` |
 | `TOOL_NOT_FOUND` | 页面未注册、工具名错、targetId 属于别人 | 重新 `list_tools`；检查 taskId |
 | `TOOL_TIMEOUT` | 页面执行慢/导航/异常 | 增大 `waitMs`；检查页面是否跨源导航 |
+| `REF_NOT_FOUND` / `REF_STALE` | 用了旧快照的索引，或元素已从 DOM 移除 | 重新 `snapshot`，只用最新索引 |
+| `ELEMENT_COVERED` / `ELEMENT_NOT_VISIBLE` | 弹层遮挡、动画未结束或元素在视口外 | 关闭弹层/等待动画/重新 `snapshot` |
+| `PAGE_CONTEXT_LOST` | 页面导航或重载销毁了 isolated world | 重新 `snapshot` 后再操作 |
+| `OPTION_NOT_FOUND` | `<select>` 没有匹配的选项文本 | 按返回的 `data.options` 重新选择 |
+| `NAVIGATION_TIMEOUT` | 页面加载慢或卡住 | 调大 `CHROME_NAVIGATE_WAIT_MS` 或 `waitMs` |
 | `TARGET_OTHER_TASK` | 想操作其他 task 的页面 | 用该 taskId 调用，或 `open_page` 自己的页面 |
 | `CONFIRM_REQUIRED` | `close_browser` 未确认 | 传 `confirm:true`（仅用户明确要求时） |
 | 修改代码不生效 | MCP 行/broker 常驻 | 重启 MCP 行；结束旧 broker 或等空闲退出 |
@@ -808,6 +937,8 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 | Chrome 调试端口 | 仅 loopback；`--remote-allow-origins=*` 只用于 `launch` 的隔离 profile |
 | Chrome profile | `launch` 使用 `%LOCALAPPDATA%\dsh-webmcp-chrome`，与日常 profile 分离 |
 | 页面工具元数据 | 不可信输入：只展示，不隐式执行；`invoke_tool` 必须由 Agent 显式调用 |
+| 页面快照 | 不可信输入：只是文本；页面文案可能诱导模型点击，但不会自动执行 |
+| 浏览器操作 | 仅在 Agent 显式调用时发生；执行的是固定的快照/点击/输入脚本，不开放任意 `Runtime.evaluate` |
 | 凭据 | 插件不读取/不存储账号、Token、Cookie；隔离 context 初始为空 |
 | 破坏性操作 | `close_browser` 需要 `confirm:true`；`close` 只影响本任务 |
 | 仓库 | `check-sensitive.mjs` 扫描个人路径/Token/私钥/Cookie；`.gitignore` 排除 profile 与日志 |
@@ -844,7 +975,15 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 - 页面使用 `document.domain` 时 WebMCP 被 Chrome 禁用。
 - 跨源导航后无法返回工具结果（Chrome 限制）。
 - 本版本没有取消命令：`TOOL_TIMEOUT` 只停止等待，页面侧可能继续执行。
-- 只暴露 WebMCP；通用 `Page.*`/`Browser.*` 能力未开放给模型。
+- 浏览器操作只暴露 `snapshot/click/type_text/press_key/navigate` 五个原语；任意
+  `Runtime.evaluate`、`Page.captureScreenshot`、网络拦截等能力不开放给模型。
+- 快照与点击只遍历 `document` 和**开放**的 shadow root；iframe（含跨源 iframe）
+  不在范围内。
+- 浏览器原生 UI（地址栏、下载确认、权限弹窗、原生 `<select>` 下拉）不受 CDP
+  输入控制；`<select>` 通过文本匹配设置值。
+- 快照只反映调用时刻：SPA 动画、异步渲染、悬停菜单出现后都需要再次 `snapshot`。
+- 桥接器不内置 LLM，也不自动循环；“思考”由 MCP host 的模型完成，因此高风险
+  动作仍应由用户确认。
 - `close_browser` 关闭整个 Chrome，不应作为任务清理手段。
 
 ---
@@ -858,6 +997,27 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 - 新增 `close_browser`（显式确认）。
 - 新增一键安装器、可移植补丁、敏感信息扫描、hermetic 测试。
 - 修复 v1 的固定 settle、轮询结果、跨任务页面干扰、`close` 关整个浏览器等问题。
+
+**新增：浏览器操作（Browser Use）**
+
+- 新增 `snapshot` / `click` / `type_text` / `press_key` / `navigate` 五个 MCP 工具，
+  对应 Trae Browser Agent 的“感知 → 思考 → 行动”循环；桥接器提供感知与行动，
+  “思考”由 MCP host 的模型完成。
+- **DOM 索引序列化**：`snapshot` 把可见可交互元素序列化为
+  `[12]<button>Sign in</button>` 形式的紧凑列表；模型只需发出索引，不依赖
+  易碎的 CSS 选择器。
+- 引用表保存在 `Page.createIsolatedWorld` 的私有 world（`dsh-browser-use`）中，
+  不向页面添加 DOM 属性、样式或全局变量。
+- 索引按页面单调递增；旧快照索引返回 `REF_NOT_FOUND`，不会误点其他元素；
+  导航销毁 isolated world，必须重新 `snapshot`。
+- 行动使用真实 CDP 鼠标/键盘事件，包含 `scrollIntoView`、可见性与遮挡检查
+  （composed 命中测试，支持开放 shadow root）；`<select>` 按 value/label 文本选值。
+- 新增独立 `PageBook` 会话，页面即使没有 WebMCP 工具也可操作。
+- 新增环境变量 `CHROME_SNAPSHOT_MAX_ELEMENTS`、`CHROME_ACTION_SETTLE_MS`、
+  `CHROME_NAVIGATE_WAIT_MS`。
+- fake CDP 支持 `Target.getTargetInfo`、`Page.getFrameTree`、
+  `Page.createIsolatedWorld`、`Page.navigate`、`Runtime.evaluate` 与 `Input.*`，
+  测试覆盖快照、点击坐标、输入/提交、按键、导航与各错误码。
 
 **稳定性修复（本批次）**
 
@@ -887,6 +1047,8 @@ CHROME_E2E=1 node --test --experimental-test-isolation=none "test/live.test.mjs"
 | [lib/cdp.mjs](../lib/cdp.mjs) | CDP 连接与调度 |
 | [lib/sessions.mjs](../lib/sessions.mjs) | 会话与工具注册表 |
 | [lib/tasks.mjs](../lib/tasks.mjs) | 任务与页面归属 |
+| [lib/pages.mjs](../lib/pages.mjs) | 浏览器操作会话（isolated world、输入、导航） |
+| [lib/page-scripts.mjs](../lib/page-scripts.mjs) | 页面侧快照/点击/输入脚本 |
 | [cordis.patch.yml](../cordis.patch.yml) | 可移植 bundle 补丁 |
 | [install.mjs](../install.mjs) | 一键安装器 |
 | [docs/INSTALL.md](INSTALL.md) | 安装/卸载/排障 |

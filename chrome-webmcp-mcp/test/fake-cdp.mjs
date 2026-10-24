@@ -11,7 +11,9 @@
  *         createTarget / closeTarget / attachToTarget / getTargetInfo /
  *         setDiscoverTargets / getBrowserContexts
  *         Browser.getVersion / Browser.close
- *         Page.getFrameTree / Page.enable
+ *         Page.getFrameTree / Page.enable / Page.navigate / createIsolatedWorld
+ *         Runtime.evaluate (recognizes the lib/page-scripts markers)
+ *         Input.dispatchMouseEvent / dispatchKeyEvent / insertText
  *         WebMCP.enable (replays toolsAdded per session) / WebMCP.disable /
  *         WebMCP.invokeTool -> { invocationId } then async toolResponded
  *
@@ -28,6 +30,7 @@
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { MARKERS } from '../lib/page-scripts.mjs';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const OP = { CONTINUATION: 0, TEXT: 1, BINARY: 2, CLOSE: 8, PING: 9, PONG: 10 };
@@ -136,7 +139,7 @@ export class FakeCdp {
   constructor({ slowMs = 0 } = {}) {
     this.slowMs = slowMs;
     this.key = crypto.randomBytes(4).toString('hex');
-    this.seq = { target: 0, context: 0, session: 0, invocation: 0 };
+    this.seq = { target: 0, context: 0, session: 0, invocation: 0, execution: 0 };
     this.targets = new Map();
     this.contexts = new Map();
     this.sessions = new Map();
@@ -170,6 +173,10 @@ export class FakeCdp {
       sessionsCreated: 0,
       targetsCreated: 0,
       targetsClosed: 0,
+      /** Browser-use traffic: one array each so tests can assert ordering. */
+      input: { mouse: [], keys: [], text: [] },
+      navigations: 0,
+      evaluations: 0,
     };
   }
 
@@ -242,6 +249,14 @@ export class FakeCdp {
       frameId: `F${n}-${this.key}`,
       tools: makeTools(targetId, `F${n}-${this.key}`),
       createdAt: Date.now(),
+      browserUse: {
+        snapshotRevision: 0,
+        nextIndex: 0,
+        snapshotText: null,
+        clickResult: null,
+        typeResult: null,
+        readyState: 'complete',
+      },
     };
     this.targets.set(targetId, target);
     this.stats.targetsCreated += 1;
@@ -284,6 +299,13 @@ export class FakeCdp {
   setCloseFailure(targetId, enabled = true) {
     if (enabled) this.closeFailures.add(targetId);
     else this.closeFailures.delete(targetId);
+  }
+
+  /** Override the canned browser-use result for one page (snapshotText, clickResult, ...). */
+  configurePage(targetId, patch) {
+    const target = this.targets.get(targetId);
+    if (!target) throw new Error(`fake-cdp: unknown target ${targetId}`);
+    Object.assign(target.browserUse, patch);
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -572,6 +594,7 @@ export class FakeCdp {
           targetId: target.targetId,
           enableCount: 0,
           createdAt: Date.now(),
+          contexts: new Set(),
         });
         this.stats.sessionsCreated += 1;
         reply({ sessionId });
@@ -643,6 +666,128 @@ export class FakeCdp {
             childFrames: [],
           },
         });
+        return;
+      }
+      case 'Page.createIsolatedWorld': {
+        const session = sessionId ? this.sessions.get(sessionId) : undefined;
+        const target = session ? this.targets.get(session.targetId) : undefined;
+        if (!session || !target) return fail('No target for isolated world');
+        const executionContextId = ++this.seq.execution;
+        session.contexts.add(executionContextId);
+        reply({ executionContextId });
+        return;
+      }
+      case 'Page.navigate': {
+        const target = this.#targetForSession(sessionId);
+        if (!target) return fail('No target for navigation');
+        if (typeof params.url !== 'string') return fail('Page.navigate needs url');
+        target.url = params.url;
+        this.stats.navigations += 1;
+        // A real navigation destroys every execution context on the target.
+        for (const session of this.sessions.values()) {
+          if (session.targetId === target.targetId) session.contexts.clear();
+        }
+        // …and therefore the new document starts a fresh page-side ref table:
+        // snapshot ids and element indices restart exactly like real Chrome.
+        // Canned payloads (snapshotText/clickResult/typeResult) are scripted
+        // responses, not page state, so they are intentionally kept.
+        target.browserUse.snapshotRevision = 0;
+        target.browserUse.nextIndex = 0;
+        reply({
+          frameId: target.frameId,
+          loaderId: `L-${target.targetId}-${this.stats.navigations}`,
+        });
+        this.emit(
+          'Page.frameNavigated',
+          { frame: { id: target.frameId, url: target.url } },
+          sessionId,
+        );
+        return;
+      }
+      case 'Runtime.evaluate': {
+        const session = sessionId ? this.sessions.get(sessionId) : undefined;
+        const target = session ? this.targets.get(session.targetId) : undefined;
+        if (!session || !target) return fail('No target for Runtime.evaluate');
+        if (params.contextId !== undefined && !session.contexts.has(params.contextId)) {
+          return fail('Cannot find context with specified id');
+        }
+        this.stats.evaluations += 1;
+        const expression = String(params.expression ?? '');
+        const view = target.browserUse;
+        if (expression.includes(MARKERS.snapshot)) {
+          view.snapshotRevision += 1;
+          const base = view.nextIndex;
+          view.nextIndex += 2;
+          reply({
+            result: {
+              type: 'object',
+              value: {
+                snapshotId: view.snapshotRevision,
+                url: target.url,
+                title: target.title,
+                total: 2,
+                elements: 2,
+                truncated: false,
+                text:
+                  view.snapshotText ??
+                  `[${base}]<button>Submit</button>\n[${base + 1}]<input type="text" placeholder="Name" />`,
+              },
+            },
+          });
+          return;
+        }
+        if (expression.includes(MARKERS.click)) {
+          reply({
+            result: {
+              type: 'object',
+              value: view.clickResult ?? {
+                ok: true,
+                x: 42,
+                y: 24,
+                tag: 'button',
+                label: 'Submit',
+              },
+            },
+          });
+          return;
+        }
+        if (expression.includes(MARKERS.type)) {
+          reply({
+            result: {
+              type: 'object',
+              value: view.typeResult ?? {
+                ok: true,
+                mode: 'typed',
+                tag: 'input',
+                label: 'Name',
+              },
+            },
+          });
+          return;
+        }
+        if (expression.includes(MARKERS.ready)) {
+          reply({ result: { type: 'string', value: view.readyState } });
+          return;
+        }
+        reply({ result: { type: 'undefined' } });
+        return;
+      }
+      case 'Input.dispatchMouseEvent': {
+        const target = this.#targetForSession(sessionId);
+        this.stats.input.mouse.push({ targetId: target?.targetId, ...params });
+        reply({});
+        return;
+      }
+      case 'Input.dispatchKeyEvent': {
+        const target = this.#targetForSession(sessionId);
+        this.stats.input.keys.push({ targetId: target?.targetId, ...params });
+        reply({});
+        return;
+      }
+      case 'Input.insertText': {
+        const target = this.#targetForSession(sessionId);
+        this.stats.input.text.push({ targetId: target?.targetId, text: params.text });
+        reply({});
         return;
       }
       case 'WebMCP.enable': {

@@ -120,6 +120,9 @@ environment. Defaults come from `lib/config.mjs`.
 | `CHROME_LISTEN_WAIT_MS` | `25000` | How long `launch` waits for the DevTools port |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle window for `toolsAdded` |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default `invoke_tool` wait |
+| `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | Default `snapshot` element budget (cap 2000) |
+| `CHROME_ACTION_SETTLE_MS` | `300` | Settle after click/type/press before reading page facts |
+| `CHROME_NAVIGATE_WAIT_MS` | `10000` | Default `navigate` load wait |
 | `CHROME_WEBMCP_STATE_DIR` | `%LOCALAPPDATA%\dsh-chrome-webmcp` (port suffix for non-9333) | Broker log, state and ownership files |
 | `CHROME_WEBMCP_IPC` | derived from the port | IPC endpoint override (tests use it) |
 

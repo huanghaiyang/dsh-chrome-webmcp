@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Browser Use Two</title>
+</head>
+<body>
+  <h1 id="heading">Browser Use Two</h1>
+  <button id="mark" type="button">Mark two</button>
+  <p id="marked">not marked</p>
+
+  <script>
+    window.__events = [];
+    document.addEventListener('click', (event) => {
+      window.__events.push({ type: 'click', id: event.target.id, trusted: event.isTrusted });
+    }, true);
+
+    document.getElementById('mark').addEventListener('click', () => {
+      document.getElementById('marked').textContent = 'marked two';
+    });
+
+    // Bulk elements for the maxElements budget test.
+    const bulk = document.createElement('div');
+    bulk.id = 'bulk';
+    for (let i = 0; i < 300; i += 1) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'bulk-btn';
+      button.textContent = `Bulk ${i}`;
+      bulk.appendChild(button);
+    }
+    document.body.appendChild(bulk);
+  </script>
+</body>
+</html>

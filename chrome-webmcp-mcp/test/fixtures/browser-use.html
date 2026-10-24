@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Browser Use Fixture</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 20px; }
+    .hidden { display: none; }
+    #zero { width: 0; height: 0; padding: 0; border: 0; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <h1 id="heading">Browser Use Fixture</h1>
+
+  <p>Counter: <span id="count">0</span></p>
+  <button id="inc" type="button">Increment</button>
+
+  <form id="form" onsubmit="window.__submitted = true; return false;">
+    <label>Email
+      <input id="email" name="email" type="text" placeholder="you@example.com" value="" />
+    </label>
+    <label>Password
+      <input id="password" name="password" type="password" value="s3cret-value" />
+    </label>
+    <label>Plan
+      <select id="plan" name="plan">
+        <option value="basic">Basic</option>
+        <option value="pro">Pro</option>
+      </select>
+    </label>
+    <label><input id="agree" type="checkbox" name="agree" /> I agree</label>
+    <button id="submit" type="submit">Sign in</button>
+    <input id="disabled-input" type="text" disabled value="nope" />
+  </form>
+
+  <a id="next" href="browser-use-2.html">Go to page two</a>
+
+  <div class="hidden"><button id="hidden-btn" type="button">Hidden button</button></div>
+
+  <div id="aria-btn" role="button" tabindex="0">Custom ARIA action</div>
+
+  <button id="zero" type="button">Zero size</button>
+
+  <!-- Shadow case 1: host is a plain container (the common encapsulation case). -->
+  <div id="shadow-host"></div>
+  <!-- Shadow case 2: host itself matches the interactive selector ([role=button]). -->
+  <div id="shadow-rolehost" role="button">Role host</div>
+  <!-- Shadow case 3: host is a custom element with no ARIA role. -->
+  <x-card id="shadow-custom"></x-card>
+  <!-- Shadow case 4: host is excluded from [tabindex] by tabindex="-1". -->
+  <div id="shadow-notab" tabindex="-1">Notab host</div>
+
+  <iframe id="frame" srcdoc="<button id='in-frame'>In frame</button>" width="200" height="40"></iframe>
+
+  <script>
+    // Event log for independent (out-of-band) verification: isTrusted proves the
+    // bridge used real CDP input instead of dispatching synthetic DOM events.
+    window.__events = [];
+    const log = (type) => (event) => {
+      window.__events.push({
+        type,
+        id: event.target && event.target.id,
+        trusted: event.isTrusted,
+        value: event.target && 'value' in event.target ? event.target.value : null,
+        key: event.key || null,
+      });
+    };
+    for (const type of ['click', 'input', 'change', 'keydown', 'submit']) {
+      document.addEventListener(type, log(type), true);
+    }
+
+    document.getElementById('inc').addEventListener('click', () => {
+      const node = document.getElementById('count');
+      node.textContent = String(Number(node.textContent) + 1);
+    });
+
+    customElements.define('x-card', class extends HTMLElement {});
+
+    const attach = (host, html) => {
+      const root = host.attachShadow({ mode: 'open' });
+      root.innerHTML = html;
+      const button = root.querySelector('button');
+      button.addEventListener('click', () => { window.__shadowClicks = (window.__shadowClicks || 0) + 1; });
+      return root;
+    };
+    attach(document.getElementById('shadow-host'), '<button id="shadow-btn">Shadow plain host inner</button>');
+    attach(document.getElementById('shadow-rolehost'), '<button id="shadow-role-inner">Shadow role host inner</button>');
+    attach(document.getElementById('shadow-custom'), '<button id="shadow-custom-inner">Shadow custom host inner</button>');
+    attach(document.getElementById('shadow-notab'), '<button id="shadow-notab-inner">Shadow tabindex-1 host inner</button>');
+
+    window.__pageGlobals = Object.keys(window).length;
+    document.documentElement.setAttribute('data-fixture', '1');
+  </script>
+</body>
+</html>

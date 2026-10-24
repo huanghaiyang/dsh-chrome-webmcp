@@ -49,10 +49,13 @@ let targetA;
 /** Page target opened and owned by task "b" in an isolated browser context. */
 let targetB;
 let contextB;
-/** Page target that existed before the broker started (unowned, shared read-only). */
+/** Page target that existed before the broker started (unowned: implicit for perception, explicit for actions). */
 let unownedTargetId;
 /** Fresh task-"a" page used by the caching / error tests. */
 let freshTargetA;
+/** Page owned by the browser-use task. */
+let browserTarget;
+const BROWSER_TASK = 'browser';
 
 async function invoke(client, taskId, params = {}) {
   return client.call('invoke_tool', { taskId, waitMs: 8000, ...params });
@@ -78,6 +81,7 @@ before(async () => {
     idleMs: IN_PROCESS_IDLE_MS,
     settleMs: 400,
     invokeWaitMs: 10000,
+    actionSettleMs: 0,
     handleSignals: false,
   });
   await waitForIpc(ipcName, { timeoutMs: 10000 });
@@ -246,6 +250,250 @@ test('concurrent slow_echo calls from two clients run in parallel', { timeout: T
   } finally {
     fake.setSlowMs(0);
   }
+});
+
+test('browser-use: snapshot serializes interactive elements with stable indices', { timeout: TEST_TIMEOUT }, async () => {
+  const opened = await clientA.call('open_page', {
+    taskId: BROWSER_TASK,
+    url: 'https://ui.example/form',
+    waitMs: 8000,
+  });
+  browserTarget = opened.targetId;
+  const snap = await clientA.call('snapshot', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+  });
+  assert.equal(snap.taskId, BROWSER_TASK);
+  assert.equal(snap.targetId, browserTarget);
+  assert.equal(snap.url, 'https://ui.example/form');
+  assert.equal(snap.snapshotId, 1);
+  assert.equal(snap.elements, 2);
+  assert.equal(snap.truncated, false);
+  assert.match(snap.snapshot, /^\[0\]<button>Submit<\/button>/);
+  assert.match(snap.snapshot, /\[1\]<input type="text" placeholder="Name" \/>/);
+  assert.equal(
+    fake.sessionCountFor(browserTarget),
+    2,
+    'browser-use adds one session alongside the WebMCP session',
+  );
+});
+
+test('browser-use: another task cannot snapshot an owned page', { timeout: TEST_TIMEOUT }, async () => {
+  let error;
+  try {
+    await clientB.call('snapshot', { taskId: 'b', targetId: browserTarget });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.equal(error?.code, 'TARGET_OTHER_TASK');
+});
+
+test('browser-use: click sends real mouse events at the reported coordinates', { timeout: TEST_TIMEOUT }, async () => {
+  const before = fake.stats.input.mouse.length;
+  const clicked = await clientA.call('click', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+    index: 0,
+  });
+  assert.equal(clicked.action, 'click');
+  assert.equal(clicked.index, 0);
+  assert.equal(clicked.tag, 'button');
+  assert.equal(clicked.x, 42);
+  assert.equal(clicked.y, 24);
+  const events = fake.stats.input.mouse
+    .slice(before)
+    .filter((event) => event.targetId === browserTarget);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['mouseMoved', 'mousePressed', 'mouseReleased'],
+  );
+  assert.equal(events[1].button, 'left');
+  assert.equal(events[1].clickCount, 1);
+  assert.equal(events[1].x, 42);
+  assert.equal(events[1].y, 24);
+});
+
+test('browser-use: type_text clears, inserts, and submits with Enter', { timeout: TEST_TIMEOUT }, async () => {
+  const textBefore = fake.stats.input.text.length;
+  const keysBefore = fake.stats.input.keys.length;
+  const typed = await clientA.call('type_text', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+    index: 1,
+    text: 'Ada',
+    submit: true,
+  });
+  assert.equal(typed.action, 'type_text');
+  assert.equal(typed.mode, 'typed');
+  assert.equal(typed.text, 'Ada');
+  assert.equal(typed.cleared, true);
+  assert.equal(typed.submitted, true);
+
+  const inserted = fake.stats.input.text
+    .slice(textBefore)
+    .filter((event) => event.targetId === browserTarget);
+  assert.deepEqual(inserted.map((event) => event.text), ['Ada']);
+
+  const keys = fake.stats.input.keys
+    .slice(keysBefore)
+    .filter((event) => event.targetId === browserTarget);
+  assert.ok(keys.length >= 4, `expected select-all + Enter events, got ${keys.length}`);
+  assert.equal(keys[0].key, 'a');
+  assert.equal(keys[0].modifiers, 2, 'clear must send Control+A first');
+  assert.ok(
+    keys.some((event) => event.type === 'rawKeyDown' && event.key === 'Enter'),
+    'submit must press Enter',
+  );
+});
+
+test('browser-use: type_text selects a matching option instead of typing', { timeout: TEST_TIMEOUT }, async () => {
+  fake.configurePage(browserTarget, {
+    typeResult: { ok: true, mode: 'selected', value: 'pro', label: 'Pro' },
+  });
+  const textBefore = fake.stats.input.text.length;
+  try {
+    const selected = await clientA.call('type_text', {
+      taskId: BROWSER_TASK,
+      targetId: browserTarget,
+      index: 2,
+      text: 'Pro',
+    });
+    assert.equal(selected.mode, 'selected');
+    assert.equal(selected.value, 'pro');
+    assert.equal(selected.label, 'Pro');
+    assert.equal(fake.stats.input.text.length, textBefore, 'a select choice inserts no text');
+  } finally {
+    fake.configurePage(browserTarget, { typeResult: null });
+  }
+});
+
+test('browser-use: press_key sends the key and rejects unknown names', { timeout: TEST_TIMEOUT }, async () => {
+  const before = fake.stats.input.keys.length;
+  const pressed = await clientA.call('press_key', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+    key: 'ArrowDown',
+  });
+  assert.deepEqual(pressed.modifiers, []);
+  const keys = fake.stats.input.keys
+    .slice(before)
+    .filter((event) => event.targetId === browserTarget);
+  assert.deepEqual(keys.map((event) => event.type), ['rawKeyDown', 'keyUp']);
+  assert.equal(keys[0].key, 'ArrowDown');
+  assert.equal(keys[0].code, 'ArrowDown');
+  assert.equal(keys[0].windowsVirtualKeyCode, 40);
+
+  let error;
+  try {
+    await clientA.call('press_key', {
+      taskId: BROWSER_TASK,
+      targetId: browserTarget,
+      key: 'LaunchMissiles',
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.equal(error?.code, 'INVALID_PARAMS');
+});
+
+test('browser-use: navigate loads the URL and the next snapshot sees it', { timeout: TEST_TIMEOUT }, async () => {
+  const navigated = await clientA.call('navigate', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+    url: 'https://ui.example/next',
+  });
+  assert.equal(navigated.action, 'navigate');
+  assert.equal(navigated.url, 'https://ui.example/next');
+  assert.equal(navigated.loaded, true);
+  assert.equal(fake.getTarget(browserTarget).url, 'https://ui.example/next');
+
+  const snap = await clientA.call('snapshot', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+  });
+  assert.equal(snap.url, 'https://ui.example/next');
+  // A new document gets a new isolated world, so the page-side ref table restarts
+  // (verified against real Chrome in test/browser-use.live.test.mjs).
+  assert.equal(snap.snapshotId, 1, 'a new document starts a new ref table');
+
+  let error;
+  try {
+    await clientA.call('navigate', {
+      taskId: BROWSER_TASK,
+      targetId: browserTarget,
+      url: 'javascript:alert(1)',
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.equal(error?.code, 'INVALID_PARAMS');
+});
+
+test('browser-use: action failures carry actionable error codes', { timeout: TEST_TIMEOUT }, async () => {
+  fake.configurePage(browserTarget, {
+    clickResult: {
+      ok: false,
+      reason: 'REF_NOT_FOUND',
+      detail: 'index 99 is not part of the latest snapshot',
+    },
+  });
+  let error;
+  try {
+    await clientA.call('click', {
+      taskId: BROWSER_TASK,
+      targetId: browserTarget,
+      index: 99,
+    });
+  } catch (caught) {
+    error = caught;
+  } finally {
+    fake.configurePage(browserTarget, { clickResult: null });
+  }
+  assert.equal(error?.code, 'REF_NOT_FOUND');
+  assert.match(error.message, /take a new snapshot/);
+  assert.equal(error.data?.targetId, browserTarget);
+});
+
+test('browser-use: unowned pages need an explicit targetId for actions', { timeout: TEST_TIMEOUT }, async () => {
+  // `unownedTargetId` is a page the user opened before the broker started: no task
+  // owns it. Perception may pick it implicitly; actions must name it explicitly so
+  // a concurrent task cannot hijack the user's tab.
+  const task = 'unowned-probe';
+  const seen = await clientA.call('snapshot', { taskId: task });
+  assert.equal(seen.targetId, unownedTargetId, 'snapshot may resolve an unowned page implicitly');
+  assert.ok(seen.snapshot.includes('['), 'snapshot still returns elements');
+
+  const mouseBefore = fake.stats.input.mouse.length;
+  const keyBefore = fake.stats.input.keys.length;
+  const attempts = [
+    ['click', { index: 0 }],
+    ['type_text', { index: 0, text: 'x' }],
+    ['press_key', { key: 'Enter' }],
+    ['navigate', { url: 'https://unowned.example/after' }],
+  ];
+  for (const [method, params] of attempts) {
+    let error;
+    try {
+      await clientA.call(method, { taskId: task, ...params });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.equal(error?.code, 'TARGET_ID_REQUIRED', `${method} must require an explicit targetId`);
+    assert.equal(error.data?.targetId, unownedTargetId);
+  }
+  assert.equal(fake.stats.input.mouse.length, mouseBefore, 'no mouse input may be dispatched');
+  assert.equal(fake.stats.input.keys.length, keyBefore, 'no key input may be dispatched');
+
+  // Naming the unowned page is the explicit, allowed path.
+  const clicked = await clientA.call('click', { taskId: task, targetId: unownedTargetId, index: 0 });
+  assert.equal(clicked.action, 'click');
+  assert.ok(fake.stats.input.mouse.length > mouseBefore, 'the explicit click must reach the page');
+});
+
+test('browser-use: close_task tears the page down', { timeout: TEST_TIMEOUT }, async () => {
+  const closed = await clientA.call('close_task', { taskId: BROWSER_TASK });
+  assert.deepEqual([...closed.closedTargetIds], [browserTarget]);
+  assert.equal(fake.hasTarget(browserTarget), false);
 });
 
 test('close_task(a) closes only a\'s pages and keeps b + unowned pages alive', { timeout: TEST_TIMEOUT }, async () => {

@@ -18,6 +18,13 @@
   add `-<port>`). `broker.json` holds `{pid, ipc, port, startedAt, version}` and
   `ownership.json` holds task ids plus Chrome target/context ids (no page content, URLs,
   cookies, or credentials). Neither is committed to the repo.
+- **Page scripting for browser-use.** `snapshot`, `click`, `type_text` and `press_key`
+  run fixed scripts from `lib/page-scripts.mjs` inside a CDP **isolated world**
+  (`Page.createIsolatedWorld`, name `dsh-browser-use`). The bridge never evaluates
+  model-supplied or page-supplied JavaScript. Input is dispatched through
+  `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` / `Input.insertText`. The
+  element reference table lives only in that isolated world; no DOM attributes,
+  styles or globals are added to the page, and none are persisted to disk.
 - **No credentials.** The plugin has no accounts, tokens, or API keys, and stores no
   page data. It does not read cookies; a browser context created for an isolated task
   simply has its own empty storage.
@@ -28,6 +35,15 @@ Page-declared tool metadata (`name`, `description`, `inputSchema`) is **untruste
 input**: it is surfaced to the model as data and never executed implicitly. Tool calls
 happen only when the agent explicitly invokes `mcp__chrome__invoke_tool`, and the page's
 own `execute` function runs inside the page — the bridge does not evaluate page JavaScript.
+
+Browser-use snapshots are also **untrusted input**: they contain visible page text
+(labels, placeholders, option text), which could be written to steer the model. Password
+field values are omitted, but other page text is not. The bridge has no autonomous
+loop — every `click`, `type_text`, `press_key` and `navigate` is a separate explicit
+tool call from the agent — so confirmation of risky actions remains the host's and the
+user's responsibility. Native browser UI (address bar, permission prompts, downloads)
+is outside the reach of these tools.
+
 `close_browser` requires an explicit `confirm: true` because it shuts down the whole
 Chrome instance.
 

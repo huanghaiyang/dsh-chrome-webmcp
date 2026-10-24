@@ -10,9 +10,10 @@
  * through PassThrough streams over the Worker message port. Production still
  * uses process.stdin/process.stdout.
  *
- * Verifies: initialize, exactly 7 tools, open_page -> invoke_tool -> close with
- * taskId echoed, broker error codes in the MCP error text, and a protocol-only
- * output stream (every frame is JSON-RPC, no diagnostics).
+ * Verifies: initialize, exactly 12 tools, open_page -> invoke_tool -> close with
+ * taskId echoed, the snapshot/click/type_text/press_key/navigate browser-use
+ * loop, broker error codes in the MCP error text, and a protocol-only output
+ * stream (every frame is JSON-RPC, no diagnostics).
  *
  * Run with: node --test --experimental-test-isolation=none test/mcp.test.mjs
  */
@@ -39,6 +40,11 @@ const EXPECTED_TOOLS = [
   'status',
   'list_tools',
   'invoke_tool',
+  'snapshot',
+  'click',
+  'type_text',
+  'press_key',
+  'navigate',
   'open_page',
   'launch',
   'close',
@@ -234,6 +240,7 @@ before(async () => {
     idleMs: 120000,
     settleMs: 400,
     invokeWaitMs: 10000,
+    actionSettleMs: 0,
     handleSignals: false,
   });
   await waitForIpc(ipcName, { timeoutMs: 10000 });
@@ -283,9 +290,10 @@ test('initialize echoes the protocol version and advertises chrome-webmcp', { ti
   assert.equal(typeof initResult.instructions, 'string');
   assert.match(initResult.instructions, /taskId/i, 'instructions must explain taskId scoping');
   assert.match(initResult.instructions, /open_page/, 'instructions must mention open_page');
+  assert.match(initResult.instructions, /snapshot/, 'instructions must describe browser-use perception');
 });
 
-test('tools/list exposes exactly the 7 contract tools', { timeout: TEST_TIMEOUT }, async () => {
+test('tools/list exposes exactly the 12 contract tools', { timeout: TEST_TIMEOUT }, async () => {
   const result = await client.request('tools/list', {});
   assert.ok(Array.isArray(result?.tools));
   const names = result.tools.map((tool) => tool.name);
@@ -301,6 +309,13 @@ test('tools/list exposes exactly the 7 contract tools', { timeout: TEST_TIMEOUT 
     byName.invoke_tool.inputSchema.required?.includes('toolName'),
     'invoke_tool.toolName is required',
   );
+  assert.ok(byName.click.inputSchema.required?.includes('index'), 'click.index is required');
+  assert.ok(
+    byName.type_text.inputSchema.required?.includes('text'),
+    'type_text.text is required',
+  );
+  assert.ok(byName.press_key.inputSchema.required?.includes('key'), 'press_key.key is required');
+  assert.ok(byName.navigate.inputSchema.required?.includes('url'), 'navigate.url is required');
   assert.equal(
     byName.close_browser.inputSchema.properties.confirm.const,
     true,
@@ -337,6 +352,69 @@ test('open_page -> invoke_tool -> close round-trip echoes taskId', { timeout: TE
   assert.equal(closedResult.taskId, TASK_ID, 'close must echo the normalized taskId');
   assert.deepEqual([...closedResult.closedTargetIds], [targetId]);
   assert.equal(fake.hasTarget(targetId), false, 'close must close the task page in Chrome');
+});
+
+test('browser-use loop: snapshot -> click -> type_text -> press_key -> navigate', { timeout: TEST_TIMEOUT }, async () => {
+  const taskId = 'mcp-ui';
+  const opened = await client.callTool('open_page', {
+    url: 'https://mcp.example/ui',
+    taskId,
+  });
+  assert.ok(!opened.isError, `open_page failed: ${toolText(opened)}`);
+  const page = toolJson(opened, 'open_page');
+  const target = page.targetId;
+
+  const snap = toolJson(
+    await client.callTool('snapshot', { taskId, targetId: target }),
+    'snapshot',
+  );
+  assert.equal(snap.taskId, taskId);
+  assert.equal(snap.targetId, target);
+  assert.match(snap.snapshot, /^\[0\]<button>Submit<\/button>/);
+  assert.equal(snap.elements, 2);
+
+  const clicked = toolJson(
+    await client.callTool('click', { taskId, targetId: target, index: 0 }),
+    'click',
+  );
+  assert.equal(clicked.action, 'click');
+  assert.equal(clicked.index, 0);
+
+  const typed = toolJson(
+    await client.callTool('type_text', {
+      taskId,
+      targetId: target,
+      index: 1,
+      text: 'Ada',
+      submit: true,
+    }),
+    'type_text',
+  );
+  assert.equal(typed.mode, 'typed');
+  assert.equal(typed.text, 'Ada');
+  assert.equal(typed.submitted, true);
+
+  const pressed = toolJson(
+    await client.callTool('press_key', { taskId, targetId: target, key: 'Tab' }),
+    'press_key',
+  );
+  assert.equal(pressed.action, 'press_key');
+  assert.equal(pressed.key, 'Tab');
+
+  const navigated = toolJson(
+    await client.callTool('navigate', {
+      taskId,
+      targetId: target,
+      url: 'https://mcp.example/next',
+    }),
+    'navigate',
+  );
+  assert.equal(navigated.url, 'https://mcp.example/next');
+  assert.equal(navigated.loaded, true);
+
+  const closed = await client.callTool('close', { taskId });
+  assert.ok(!closed.isError, `close failed: ${toolText(closed)}`);
+  assert.deepEqual([...toolJson(closed, 'close').closedTargetIds], [target]);
 });
 
 test('broker error codes surface in the MCP error text as [CODE]', { timeout: TEST_TIMEOUT }, async () => {
