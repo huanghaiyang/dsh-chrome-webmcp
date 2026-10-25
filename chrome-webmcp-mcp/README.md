@@ -71,11 +71,15 @@ is the "think" step; the bridge provides perception and action:
 4. **Perceive again** — call `snapshot` after every action or navigation.
 
 The index is a direct handle to the element, not a fragile CSS selector. The
-page-side script keeps the ref table in a private **isolated world**, so the
-snapshot adds no DOM attributes, styles, or globals to the page. Indices are
-monotonic per page: an index from an older snapshot fails with `REF_NOT_FOUND`
-instead of silently addressing a different element. A new snapshot is required
-after navigation because the document (and its isolated world) was replaced.
+page-side script keeps the ref table in a private **isolated world**, so no
+page globals or element attributes are added. By default the snapshot also
+draws a non-interactive overlay — highlight boxes plus numbered badges — so the
+user can map each index to an on-screen element (pass `visualize:false` for a
+text-only snapshot). The overlay is removed on the next action or snapshot.
+Indices are monotonic per page: an index from an older snapshot fails with
+`REF_NOT_FOUND` instead of silently addressing a different element. A new
+snapshot is required after navigation because the document (and its isolated
+world) was replaced.
 
 ## Multi-task model
 

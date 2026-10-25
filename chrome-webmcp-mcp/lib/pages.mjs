@@ -507,10 +507,10 @@ export class PageBook {
    * @throws {CdpError} PAGE_NOT_READABLE —— 页面没有返回合法快照；
    *   PAGE_CONTEXT_LOST / PAGE_EVALUATION_FAILED —— 见 evaluate。
    */
-  async snapshot(targetId, { maxElements, clientId } = {}) {
+  async snapshot(targetId, { maxElements, visualize, clientId } = {}) {
     const value = await this.evaluate(
       targetId,
-      snapshotExpression({ maxElements }),
+      snapshotExpression({ maxElements, visualize }),
       { clientId, retry: true },
     );
     // text 是快照的契约字段；缺失说明脚本未正确执行（或返回值不可克隆）。

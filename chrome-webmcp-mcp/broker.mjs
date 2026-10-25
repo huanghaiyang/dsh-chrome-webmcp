@@ -576,6 +576,7 @@ export async function runBroker(options = {}) {
     const page = await pageFor(taskId, params);
     const data = await pageBook.snapshot(page.targetId, {
       maxElements: params.maxElements ?? SNAPSHOT_MAX_ELEMENTS,
+      visualize: params.visualize !== false,
       clientId: client.name,
     });
     return {

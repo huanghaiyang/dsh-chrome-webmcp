@@ -408,14 +408,15 @@ const TOOLS = [
   {
     name: 'snapshot',
     method: 'snapshot',
-    paramNames: ['taskId', 'targetId', 'url', 'maxElements'],
+    paramNames: ['taskId', 'targetId', 'url', 'maxElements', 'visualize'],
     description:
       'Perceive the page: return visible interactive elements (buttons, links, fields, ARIA ' +
       'widgets, shadow DOM) as a compact numbered list such as ' +
       '"[12]<button type=\\"submit\\">Sign in</button>". This is the perception step of the ' +
       'browser-use loop; pass an index to click or type_text. Indices belong to the latest ' +
       'snapshot only and become invalid after another snapshot or a page navigation. The ' +
-      'snapshot runs in an isolated world and does not modify the page.',
+      'snapshot runs in an isolated world; by default it also draws a non-interactive overlay ' +
+      'with highlight boxes and numbered badges on the page (pass visualize:false to disable).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -429,6 +430,13 @@ const TOOLS = [
           description:
             'Maximum number of elements to serialize (default CHROME_SNAPSHOT_MAX_ELEMENTS = ' +
             '200, hard cap 2000). Lower it on very large pages to save tokens.',
+        },
+        visualize: {
+          type: 'boolean',
+          description:
+            'true (default) draws a highlight box and a numbered badge on each element so the ' +
+            'user can map indices to on-screen elements; false keeps the snapshot text-only. ' +
+            'The overlay has pointer-events:none and is removed on the next action or snapshot.',
         },
       },
       additionalProperties: false,
