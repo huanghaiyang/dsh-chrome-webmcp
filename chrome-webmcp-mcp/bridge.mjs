@@ -598,7 +598,10 @@ const TOOLS = [
     paramNames: ['url', 'timeoutMs'],
     description:
       'Start Chrome with remote debugging and the WebMCP features enabled when nothing is ' +
-      'listening on the DevTools port. Never closes pages or tasks.',
+      'listening on the DevTools port. The debug browser is opened maximized (fills the ' +
+      'screen; `--start-maximized` plus a CDP window-state fallback), and an already-running ' +
+      'debug window is maximized too. Set CHROME_WINDOW_MODE=fullscreen|default to change ' +
+      'that. Never closes pages or tasks.',
     inputSchema: {
       type: 'object',
       properties: {

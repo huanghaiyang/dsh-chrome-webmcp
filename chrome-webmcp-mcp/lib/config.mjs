@@ -104,6 +104,25 @@ export const USER_DATA_DIR = process.env.CHROME_USER_DATA_DIR || defaultUserData
 
 /** 启动/复用 Chrome 后等待 DevTools 端口开始监听的最长时间。 */
 export const CHROME_LISTEN_WAIT_MS = positiveInt(process.env.CHROME_LISTEN_WAIT_MS, 25000);
+
+/**
+ * `launch` 之后把调试浏览器窗口放成什么形态。
+ *
+ * 调试浏览器的默认姿态是“打开就能看清页面”，因此默认 `maximized`（最大化，
+ * 占满屏幕可用区域，标签栏/地址栏仍在，方便继续手工操作）；
+ * `fullscreen` 走真全屏（F11，隐藏浏览器 UI，适合演示/截图）；
+ * `default` 完全不干预，沿用 profile 里记住的尺寸。
+ *
+ * 非法值（拼错、空串）一律回退到 `maximized`，避免一个拼写错误让窗口悄悄变小。
+ */
+export const WINDOW_MODE = (() => {
+  const raw = String(process.env.CHROME_WINDOW_MODE || '')
+    .trim()
+    .toLowerCase();
+  if (raw === 'fullscreen' || raw === 'full-screen') return 'fullscreen';
+  if (raw === 'default' || raw === 'normal' || raw === 'none' || raw === 'off') return 'default';
+  return 'maximized';
+})();
 /** 用于判断页面“已回放完工具”的静默窗口时长。 */
 export const TOOL_SETTLE_MS = positiveInt(process.env.CHROME_TOOL_SETTLE_MS, 1200);
 /** 调用一次 WebMCP 工具后等待 `toolResponded` 事件的默认上限。 */
@@ -218,7 +237,7 @@ export const BRIDGE_ENTRY = path.join(BRIDGE_DIR, 'bridge.mjs');
 /**
  * 汇总当前生效的关键配置，用于日志与诊断输出。
  *
- * @returns {{version: string, port: number, endpoint: string, ipc: string, stateDir: string, ownershipFile: string, userDataDir: string}} 配置快照。
+ * @returns {{version: string, port: number, endpoint: string, ipc: string, stateDir: string, ownershipFile: string, userDataDir: string, windowMode: string}} 配置快照。
  */
 export function describeConfig() {
   return {
@@ -229,5 +248,6 @@ export function describeConfig() {
     stateDir: STATE_DIR,
     ownershipFile: OWNERSHIP_FILE,
     userDataDir: USER_DATA_DIR,
+    windowMode: WINDOW_MODE,
   };
 }

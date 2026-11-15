@@ -60,6 +60,17 @@ path is ever committed.
 3. If Chrome is not running, call `mcp__chrome__launch`. The harness **host** must start
    Chrome: an agent-sandboxed shell cannot (see §6).
 
+### Restarting the broker after a code change
+
+The broker is a separate long-lived process (per CDP port), so editing `broker.mjs` or
+`lib/config.mjs` only takes effect after it restarts. Stop it by the pid reported in
+`mcp__chrome__status` → `broker.pid` (Chrome itself keeps running), and the next
+`mcp__chrome__*` call lazily spawns a fresh broker with the current code. In an
+unsandboxed shell `node scripts/restart-broker.mjs --shutdown` asks the broker to stop
+through its own IPC (named-pipe connects are denied inside the sandbox). The debug
+window state can be inspected or spoofed with `node scripts/window-state.mjs report`
+/ `node scripts/window-state.mjs small`.
+
 ## 2. Manual install without the CLI
 
 Use the harness plugin manager, which performs the same profile update:
@@ -118,6 +129,7 @@ environment. Defaults come from `lib/config.mjs`.
 | `CHROME_PATH` | auto-detect | Chrome executable for `mcp__chrome__launch` |
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` (port suffix for non-9333) | Isolated Chrome profile used by `launch` |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | How long `launch` waits for the DevTools port |
+| `CHROME_WINDOW_MODE` | `maximized` | Window mode after `launch`: `maximized` (fills the screen) / `fullscreen` / `default` |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle window for `toolsAdded` |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default `invoke_tool` wait |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | Default `snapshot` element budget (cap 2000) |

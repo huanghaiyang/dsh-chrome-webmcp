@@ -723,6 +723,22 @@ test('ownership survives a broker restart and keeps task isolation', { timeout: 
   }
 });
 
+test('launch maximizes the debug window through CDP when Chrome is already running', { timeout: TEST_TIMEOUT }, async () => {
+  const before = fake.stats.windowBounds.length;
+  // The fake endpoint is already listening, so this takes the `alreadyRunning` branch:
+  // no spawn happens, and only the CDP window-state fallback can resize the window.
+  const result = await clientA.call('launch', { taskId: 'a' }, { timeoutMs: 20000 });
+  assert.equal(result.alreadyRunning, true);
+  assert.equal(result.window.mode, 'maximized');
+  assert.ok(result.window.windows >= 1, `expected at least one window, got ${result.window.windows}`);
+  assert.equal(result.window.applied, 1, 'the single fake OS window must be maximized');
+
+  const calls = fake.stats.windowBounds.slice(before);
+  assert.equal(calls.length, 1, 'many page targets in one window must be set exactly once');
+  assert.equal(calls[0].windowId, 1);
+  assert.deepEqual(calls[0].bounds, { windowState: 'maximized' });
+});
+
 test('real broker child idle-exits, removes the state file, and leaves Chrome running', { timeout: 60000 }, async () => {
   const childIpc = await reserveIpcEndpoint('broker-idle');
   const childStateDir = uniqueStateDir('broker-idle-state');

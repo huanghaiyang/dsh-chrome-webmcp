@@ -322,6 +322,7 @@ plugin_manager set_bundle target=dsh-chrome-webmcp enabled=true    # 恢复
 | `CHROME_PATH` | 自动探测 | `launch` 使用的 Chrome | 非标准安装时显式设置 |
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome`（端口 9333）；其他端口为 `...-<port>` | `launch` 的隔离 profile | 不要指向日常 profile |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 | 慢机器可调大 |
+| `CHROME_WINDOW_MODE` | `maximized` | `launch` 后的窗口形态：`maximized` / `fullscreen` / `default` | 想让调试窗口真全屏（隐藏浏览器 UI）用 `fullscreen`；不想被动改窗口用 `default` |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次工具发现的 settle 上限 | 页面工具注册慢时调大 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 默认调用等待 | 长任务页面调大 |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | `snapshot` 默认元素预算（上限 2000） | 页面元素很多时调大；会增大返回文本 |
@@ -529,7 +530,7 @@ settle 规则（`#settle`）：
 | 7 | `press_key` | `key`、`taskId?`、`targetId?`、`url?`、`waitMs?` | `{taskId, targetId, action, key, modifiers, url, title}` |
 | 8 | `navigate` | `url`、`taskId?`、`targetId?`、`waitMs?` | `{taskId, targetId, action, requestedUrl, url, title, loaded, elapsedMs}` |
 | 9 | `open_page` | `url`、`taskId?`、`isolated?`、`waitMs?` | `{taskId, targetId, url, title, isolated, tools[]}` |
-| 10 | `launch` | `url?`、`timeoutMs?` | `{launched, alreadyRunning, pid?, port, userDataDir?, browser?}` |
+| 10 | `launch` | `url?`、`timeoutMs?` | `{launched, alreadyRunning, pid?, port, userDataDir?, browser?, window:{mode, windows, applied}}` |
 | 11 | `close` | `taskId?` | `{taskId, closedTargetIds[], disposedContext}` |
 | 12 | `close_browser` | `confirm`（必须 `true`） | `{closed:true}` |
 
@@ -722,7 +723,8 @@ broker                                   Chrome
 
 - `runBroker(options)`：可编程启动（测试直接调用）或 `--broker` 入口；支持 `ownershipFile` 覆盖。
 - `createLogger()`：写 `broker.log`；>2 MiB 轮转一次。
-- `launchChrome()`：复用已存在端口，否则 spawn Chrome（detached、stdio ignore），250ms 轮询等端口。
+- `launchChrome()`：复用已存在端口，否则 spawn Chrome（detached、stdio ignore），250ms 轮询等端口；spawn 参数按 `WINDOW_MODE` 追加 `--start-maximized` / `--start-fullscreen`。
+- `applyWindowMode()`：端口就绪后经 `Target.getTargets` → `Browser.getWindowForTarget` → `Browser.setWindowBounds({windowState})` 把每个 OS 窗口撑到目标形态（同窗多标签去重）；`alreadyRunning` 分支也会调用，因此已运行的调试窗口同样被最大化。整条链路 best-effort（3s 单命令超时，失败只记日志），返回 `{mode, windows, applied}`。
 - `close()`：持久化归属、关闭 IPC/CDP、删除 `broker.json`；`ownership.json` 保留。
 - 生产模式（`handleSignals !== false`）安装 SIGINT/SIGTERM；`uncaughtException` 记录后清理状态并 `exit(1)`，由客户端下次调用重建 broker。
 - `listTools()`：`mapLimit(..., DISCOVERY_CONCURRENCY, ...)` 并行发现；单页失败降级为 `skipped`。

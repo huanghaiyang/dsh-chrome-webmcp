@@ -166,6 +166,8 @@ export class FakeCdp {
       maxInflight: 0,
       /** Browser.close calls. */
       browserCloseCalls: 0,
+      /** Browser.setWindowBounds calls, in order: `{windowId, bounds}` (window state applied via CDP). */
+      windowBounds: [],
       /** Unknown CDP methods (answered with {} so a broker may probe harmlessly). */
       unknownMethods: Object.create(null),
       /** Frames that were not valid JSON. */
@@ -560,6 +562,23 @@ export class FakeCdp {
         const targetInfos = [...this.targets.values()].map((target) => this.#targetInfo(target));
         // `targetInfos` is the real CDP shape; `pages` mirrors it for fixtures/docs.
         reply({ targetInfos, pages: targetInfos });
+        return;
+      }
+      case 'Browser.getWindowForTarget': {
+        // The fake exposes exactly one OS window shared by every page target, so the
+        // broker's per-window de-duplication is observable (N tabs -> 1 setWindowBounds).
+        if (params.targetId && !this.targets.has(params.targetId)) {
+          return fail(`No target with targetId ${params.targetId}`);
+        }
+        reply({
+          windowId: 1,
+          bounds: { left: 0, top: 0, width: 800, height: 600, windowState: 'normal' },
+        });
+        return;
+      }
+      case 'Browser.setWindowBounds': {
+        this.stats.windowBounds.push({ windowId: params.windowId, bounds: params.bounds || {} });
+        reply({});
         return;
       }
       case 'Target.getTargetInfo': {

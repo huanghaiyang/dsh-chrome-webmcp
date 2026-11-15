@@ -149,7 +149,7 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 | `press_key` | `key`(必填)、`targetId?`、`url?`、`taskId?`、`waitMs?` | **行动**：发送 `Enter`、`Tab`、方向键或 `Control+A` 等组合键 |
 | `navigate` | `url`(必填)、`targetId?`、`taskId?`、`waitMs?` | **行动**：当前标签页导航并等待 `document.readyState === "complete"` |
 | `open_page` | `url`(必填)、`taskId?`、`isolated?`、`waitMs?` | 打开任务拥有的页面并返回已注册工具 |
-| `launch` | `url?`、`timeoutMs?` | 端口未监听时按 WebMCP 参数拉起 Chrome |
+| `launch` | `url?`、`timeoutMs?` | 端口未监听时按 WebMCP 参数拉起 Chrome，并把窗口最大化（撑满屏幕） |
 | `close` | `taskId?` | 关闭本任务拥有的页面并销毁其隔离 context |
 | `close_browser` | `confirm: true` | 关闭整个 Chrome；仅限用户明确要求 |
 
@@ -188,11 +188,36 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 --remote-allow-origins=*
 --enable-features=enable-webmcp-testing,WebMCP
 --enable-blink-features=WebMCP
+--start-maximized          # 窗口形态见下；CHROME_WINDOW_MODE=default 时不传
 ```
 
 - `enable-webmcp-testing` 是 **base::Feature 名字**，当裸开关写无效；
 - 只传 `enable-webmcp-testing` 时，CDP `WebMCP.enable` 能成功，但页面里
   `document.modelContext` 仍是 `undefined`——必须再加 `--enable-blink-features=WebMCP`。
+
+### 6.1 窗口撑满屏幕（`launch` 默认行为）
+
+调试窗口默认最大化，占满屏幕的可用区域（保留标签栏/地址栏，方便继续手工操作）：
+
+- spawn 时带 `--start-maximized`（`fullscreen` 形态则是 `--start-fullscreen`），
+  保证**首帧**就是大窗，不会先闪一个小窗；
+- 端口就绪后再用 CDP 兜底：`Target.getTargets` → `Browser.getWindowForTarget` →
+  `Browser.setWindowBounds({windowState:"maximized"})`，逐个窗口（同一窗口的多个
+  标签页去重）设置。之所以要两条路径：`--start-maximized` 只对**新建窗口**生效，
+  而 Chrome 会从 profile 里恢复上次的窗口尺寸；端口已在监听时（`alreadyRunning`）
+  更是完全不走 spawn，只能靠 CDP。
+- 已运行的调试浏览器也会被同样撑开；`launch` 返回值的 `window` 字段给出
+  `{ mode, windows, applied }`，窗口操作全程 best-effort，失败只记日志、不影响启动。
+
+形态由环境变量 `CHROME_WINDOW_MODE` 控制：
+
+| 取值 | 行为 |
+|---|---|
+| `maximized`（默认） | 最大化，占满屏幕可用区域，浏览器 UI 仍在 |
+| `fullscreen` | 真全屏（F11），隐藏浏览器 UI |
+| `default` / `normal` / `none` / `off` | 不干预，沿用 profile 记住的尺寸 |
+
+
 
 ---
 
@@ -206,6 +231,7 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 | `CHROME_PATH` | 自动探测 | `launch` 使用的 Chrome |
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome`（非 9333 端口追加 `-<port>`） | `launch` 使用的隔离 profile |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 |
+| `CHROME_WINDOW_MODE` | `maximized` | `launch` 后的窗口形态：`maximized` / `fullscreen` / `default` |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次发现工具的 settle 上限 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 调用结果默认等待 |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | `snapshot` 默认元素预算（工具参数 `maxElements` 可覆盖，上限 2000） |

@@ -36,6 +36,7 @@ import {
   TOOL_SETTLE_MS,
   USER_DATA_DIR,
   VERSION,
+  WINDOW_MODE,
   ensureStateDir,
   findChrome,
   sleep,
@@ -48,6 +49,8 @@ import { TaskBook } from './lib/tasks.mjs';
 
 /** 日志文件轮转阈值：超过 2 MB 就改名为 `<file>.1`，避免长期运行把磁盘写满。 */
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
+/** Browser 域单条窗口命令的超时。窗口形态只是体验优化，绝不能拖慢甚至打断 launch。 */
+const WINDOW_CMD_TIMEOUT_MS = 3000;
 /** 合法的 taskId：1-64 字符，首字符为字母/数字，其余可含 ".", "_", "-"。 */
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -308,20 +311,96 @@ export async function runBroker(options = {}) {
   };
 
   /**
+   * 把调试浏览器的窗口撑到目标形态（默认最大化 = 占满屏幕可用区域）。
+   *
+   * 为什么命令行开关不够、还要走一遍 CDP：
+   *  - `--start-maximized` 只对「本次新建的窗口」生效，而 Chrome 会从 profile 里
+   *    恢复上次的窗口尺寸/位置；已存在的小窗不会被放大；
+   *  - DevTools 端口已经在监听时（`alreadyRunning` 分支）根本不再走 spawn，
+   *    命令行开关完全不参与，只能靠 Browser 域显式设置。
+   *
+   * 因此这里对当前所有 page target 找到各自的 OS 窗口（去重），逐个
+   * `Browser.setWindowBounds({windowState})`。全程 best-effort：任何失败只记日志，
+   * 绝不把 launch 变成失败——窗口大小不值得阻塞调试。
+   *
+   * @param {string} [mode=WINDOW_MODE] `maximized` / `fullscreen` / `default`
+   * @returns {Promise<{mode: string, windows: number, applied: number, error?: string}>}
+   *   `windows` 为探测到的窗口数，`applied` 为成功改写形态的窗口数
+   */
+  const applyWindowMode = async (mode = WINDOW_MODE) => {
+    const state = mode === 'fullscreen' ? 'fullscreen' : mode === 'maximized' ? 'maximized' : null;
+    if (!state) return { mode, windows: 0, applied: 0 };
+    let targetInfos;
+    try {
+      const targets = await cdp.send('Target.getTargets', {}, undefined, {
+        timeoutMs: WINDOW_CMD_TIMEOUT_MS,
+      });
+      targetInfos = Array.isArray(targets?.targetInfos) ? targets.targetInfos : [];
+    } catch (error) {
+      log('[broker] window: Target.getTargets failed', error?.code || '', error?.message || String(error));
+      return { mode, windows: 0, applied: 0, error: error?.code || 'CDP_ERROR' };
+    }
+    const seen = new Set();
+    let applied = 0;
+    for (const info of targetInfos) {
+      if (info?.type !== 'page' || !info.targetId) continue;
+      try {
+        const { windowId } = await cdp.send(
+          'Browser.getWindowForTarget',
+          { targetId: info.targetId },
+          undefined,
+          { timeoutMs: WINDOW_CMD_TIMEOUT_MS },
+        );
+        // 同一窗口里的多个标签页会解析出同一个 windowId，只设置一次。
+        if (typeof windowId !== 'number' || seen.has(windowId)) continue;
+        seen.add(windowId);
+        await cdp.send(
+          'Browser.setWindowBounds',
+          { windowId, bounds: { windowState: state } },
+          undefined,
+          { timeoutMs: WINDOW_CMD_TIMEOUT_MS },
+        );
+        applied += 1;
+      } catch (error) {
+        // 单个窗口失败（例如已处于全屏/最小化）不影响其余窗口。
+        log(
+          '[broker] window: set bounds failed',
+          info.targetId,
+          error?.code || '',
+          error?.message || String(error),
+        );
+      }
+    }
+    if (applied > 0) log('[broker] window:', state, `applied to ${applied} window(s)`);
+    return { mode, windows: seen.size, applied };
+  };
+
+  /**
    * 启动 Chrome（仅在 DevTools 端口无人监听时）。已运行则直接返回，不重复拉起。
    *
    * 启动参数必须同时带 base::Feature 与 Blink feature 才能拿到 document.modelContext；
    * 使用独立的 USER_DATA_DIR，避免与用户日常浏览的 profile 互相干扰。
    *
+   * 窗口形态由 WINDOW_MODE 决定（默认最大化）：spawn 带 `--start-maximized` 让首帧
+   * 就是大窗，随后 applyWindowMode() 用 CDP 兜底（profile 恢复的小窗 / 已运行实例）。
+   *
    * @param {{url?: string, timeoutMs?: number}} [params] 初始 URL 与端口等待上限
-   * @returns {Promise<object>} launched/alreadyRunning/port/browser 等启动结果
+   * @returns {Promise<object>} launched/alreadyRunning/port/browser/window 等启动结果
    * @throws {CdpError} BROWSER_LAUNCH_FAILED：找不到 Chrome 可执行文件，或超时仍未监听端口
    */
   const launchChrome = async ({ url, timeoutMs } = {}) => {
     // cacheMs: 0 强制实时探测，避免用缓存的「不可达」误判。
     const existing = await cdp.version({ cacheMs: 0 });
     if (existing) {
-      return { launched: false, alreadyRunning: true, port, browser: existing.Browser ?? null };
+      // 已运行：不重新 spawn，但仍然把现有窗口撑开（调试浏览器每次都被要求占满屏幕）。
+      const window = await applyWindowMode();
+      return {
+        launched: false,
+        alreadyRunning: true,
+        port,
+        browser: existing.Browser ?? null,
+        window,
+      };
     }
     const executable = findChrome();
     if (!executable) {
@@ -348,8 +427,11 @@ export async function runBroker(options = {}) {
       // feature "WebMCP" 两者缺一不可，否则拿不到 document.modelContext。
       '--enable-features=enable-webmcp-testing,WebMCP',
       '--enable-blink-features=WebMCP',
-      targetUrl,
     ];
+    // 首帧就大窗：避免先闪一个小窗再被 CDP 放大。
+    if (WINDOW_MODE === 'maximized') args.push('--start-maximized');
+    else if (WINDOW_MODE === 'fullscreen') args.push('--start-fullscreen');
+    args.push(targetUrl);
     let child;
     try {
       child = spawn(executable, args, { detached: true, stdio: 'ignore', windowsHide: true });
@@ -362,6 +444,8 @@ export async function runBroker(options = {}) {
     while (Date.now() < deadline) {
       const info = await cdp.version({ cacheMs: 0 });
       if (info) {
+        // 命令行开关已让首帧大窗；这里再兜底一次，覆盖「profile 恢复了小窗」的情况。
+        const window = await applyWindowMode();
         return {
           launched: true,
           alreadyRunning: false,
@@ -369,6 +453,7 @@ export async function runBroker(options = {}) {
           port,
           userDataDir: USER_DATA_DIR,
           browser: info.Browser ?? null,
+          window,
         };
       }
       await sleep(250);

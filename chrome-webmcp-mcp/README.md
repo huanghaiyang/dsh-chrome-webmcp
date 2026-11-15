@@ -146,7 +146,7 @@ environments; the default never listens on a network port.
 | `press_key` | `key`, `targetId?`, `url?`, `taskId?`, `waitMs?` | Act: send `Enter`, `Tab`, arrows, or a combination such as `Control+A`. |
 | `navigate` | `url`, `targetId?`, `taskId?`, `waitMs?` | Act: navigate the existing tab and wait for `document.readyState === "complete"`. |
 | `open_page` | `url`, `taskId?`, `isolated?`, `waitMs?` | Open a task-owned page and return its tools. |
-| `launch` | `url?`, `timeoutMs?` | Start Chrome with the WebMCP flags if the DevTools port is closed. |
+| `launch` | `url?`, `timeoutMs?` | Start Chrome with the WebMCP flags if the DevTools port is closed, opened maximized (fills the screen). |
 | `close` | `taskId?` | Close only this task's owned pages and isolated context. |
 | `close_browser` | `confirm: true` | Whole-browser shutdown; only on explicit user request. |
 
@@ -162,10 +162,38 @@ only executed when the agent explicitly calls `invoke_tool`.
 --remote-allow-origins=*
 --enable-features=enable-webmcp-testing,WebMCP   # base::Feature name is "enable-webmcp-testing"
 --enable-blink-features=WebMCP                   # without this document.modelContext stays undefined
+--start-maximized                                # window mode; omitted when CHROME_WINDOW_MODE=default
 ```
 
 Passing only `enable-webmcp-testing` leaves the page API undefined; passing only
 `WebMCP` leaves the CDP domain unavailable.
+
+### Window fills the screen
+
+The debug window is maximized by default (full usable screen area; tab/address bar
+stay visible so you can still drive the browser by hand):
+
+- the spawn carries `--start-maximized` (`--start-fullscreen` for the `fullscreen`
+  mode) so the **first frame** is already large instead of flashing a small window;
+- once the port answers, `launch` also sets the window state through CDP
+  (`Target.getTargets` → `Browser.getWindowForTarget` →
+  `Browser.setWindowBounds({windowState:"maximized"})`), once per OS window with the
+  tabs of that window deduplicated. Both paths exist because `--start-maximized`
+  only affects a **new** window while Chrome otherwise restores the size saved in
+  the profile — and when the port is already listening (`alreadyRunning`) there is
+  no spawn at all, so only CDP can resize it;
+- an already-running debug browser is maximized too; `launch` reports
+  `window: { mode, windows, applied }`. Window handling is best-effort: failures are
+  logged and never fail the launch.
+
+`CHROME_WINDOW_MODE` selects the mode:
+
+| Value | Behaviour |
+|---|---|
+| `maximized` (default) | Maximized, full usable screen area, browser UI kept |
+| `fullscreen` | Real fullscreen (F11), browser UI hidden |
+| `default` / `normal` / `none` / `off` | Leave the window alone (profile-remembered size) |
+
 
 ## Configuration
 
@@ -177,6 +205,7 @@ Passing only `enable-webmcp-testing` leaves the page API undefined; passing only
 | `CHROME_PATH` | auto-detect | Chrome executable used by `launch` |
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | Isolated profile used by `launch` (port suffix for non-9333) |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` port wait |
+| `CHROME_WINDOW_MODE` | `maximized` | Window mode after `launch`: `maximized` / `fullscreen` / `default` |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle ceiling |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default invocation wait |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | Default `snapshot` element budget (tool override: `maxElements`, cap 2000) |
