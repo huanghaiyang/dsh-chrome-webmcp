@@ -177,6 +177,10 @@ export class FakeCdp {
       targetsClosed: 0,
       /** Browser-use traffic: one array each so tests can assert ordering. */
       input: { mouse: [], keys: [], text: [] },
+      /** Ghost-cursor traffic (visual mouse): {kind:'move'|'tap', targetId, x, y, count, seq}. */
+      cursor: [],
+      /** Monotonic action counter shared by cursor events and input events (ordering proof). */
+      actionSeq: 0,
       navigations: 0,
       evaluations: 0,
     };
@@ -733,6 +737,25 @@ export class FakeCdp {
         this.stats.evaluations += 1;
         const expression = String(params.expression ?? '');
         const view = target.browserUse;
+        // Ghost cursor (lib/ghost-cursor.mjs): record what the page was told to draw so
+        // tests can prove the pointer moves before the real mouse events are dispatched.
+        if (expression.includes(MARKERS.cursorMove) || expression.includes(MARKERS.cursorTap)) {
+          const point = /var X = (-?\d+(?:\.\d+)?);[\s\S]*?var Y = (-?\d+(?:\.\d+)?);/.exec(
+            expression,
+          );
+          const isTap = expression.includes(MARKERS.cursorTap);
+          const rings = isTap ? Number(/var RINGS = (\d+);/.exec(expression)?.[1] || 1) : 0;
+          this.stats.cursor.push({
+            kind: isTap ? 'tap' : 'move',
+            targetId: target.targetId,
+            x: point ? Number(point[1]) : null,
+            y: point ? Number(point[2]) : null,
+            count: isTap ? rings : undefined,
+            seq: ++this.stats.actionSeq,
+          });
+          reply({ result: { type: 'object', value: { ok: true } } });
+          return;
+        }
         if (expression.includes(MARKERS.snapshot)) {
           view.snapshotRevision += 1;
           const base = view.nextIndex;
@@ -779,6 +802,9 @@ export class FakeCdp {
                 mode: 'typed',
                 tag: 'input',
                 label: 'Name',
+                // Field centre in viewport pixels: drives the ghost-cursor move.
+                x: 120,
+                y: 48,
               },
             },
           });
@@ -793,7 +819,11 @@ export class FakeCdp {
       }
       case 'Input.dispatchMouseEvent': {
         const target = this.#targetForSession(sessionId);
-        this.stats.input.mouse.push({ targetId: target?.targetId, ...params });
+        this.stats.input.mouse.push({
+          targetId: target?.targetId,
+          seq: ++this.stats.actionSeq,
+          ...params,
+        });
         reply({});
         return;
       }

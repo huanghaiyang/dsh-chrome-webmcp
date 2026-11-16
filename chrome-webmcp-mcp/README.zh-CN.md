@@ -144,8 +144,8 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 | `list_tools` | `targetId?`、`url?`、`taskId?`、`waitMs?`、`refresh?` | 列出本任务可用页面上的 WebMCP 工具 |
 | `invoke_tool` | `toolName`(必填)、`input?`、`targetId?`、`url?`、`frameId?`、`taskId?`、`waitMs?` | 调用工具；`frameId` 必须配 `targetId` |
 | `snapshot` | `targetId?`、`url?`、`taskId?`、`maxElements?` | **感知**：把可见可交互元素序列化成带数字索引的 `snapshot` 文本 |
-| `click` | `index`(必填)、`targetId?`、`url?`、`taskId?`、`button?`、`clickCount?`、`waitMs?` | **行动**：按索引发送真实鼠标点击 |
-| `type_text` | `index`、`text`(必填)、`targetId?`、`url?`、`taskId?`、`clear?`、`submit?`、`waitMs?` | **行动**：聚焦输入框并输入；对 `<select>` 按文本选选项 |
+| `click` | `index`(必填)、`targetId?`、`url?`、`taskId?`、`button?`、`clickCount?`、`waitMs?` | **行动**：模拟鼠标移动到元素并发送真实点击（含点击涟漪） |
+| `type_text` | `index`、`text`(必填)、`targetId?`、`url?`、`taskId?`、`clear?`、`submit?`、`waitMs?` | **行动**：聚焦输入框并输入（模拟鼠标停到字段上）；对 `<select>` 按文本选选项 |
 | `press_key` | `key`(必填)、`targetId?`、`url?`、`taskId?`、`waitMs?` | **行动**：发送 `Enter`、`Tab`、方向键或 `Control+A` 等组合键 |
 | `navigate` | `url`(必填)、`targetId?`、`taskId?`、`waitMs?` | **行动**：当前标签页导航并等待 `document.readyState === "complete"` |
 | `open_page` | `url`(必填)、`taskId?`、`isolated?`、`waitMs?` | 打开任务拥有的页面并返回已注册工具 |
@@ -178,6 +178,31 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 
 页面声明的 `description` / `inputSchema` 属于**不可信数据**：只呈现、不隐式执行；
 只有 Agent 显式调用 `invoke_tool` 才会执行。
+
+### 5.2 模拟鼠标（幽灵光标）：看得见的移动与点击
+
+CDP 的 `Input.dispatchMouseEvent` 只把事件投递给渲染器，**不会移动操作系统的真实指针**，
+所以默认情况下屏幕上没有任何“Agent 正在点这里”的迹象。桥接器因此在页面里注入一层
+**模拟鼠标**（`lib/ghost-cursor.mjs`）：
+
+- **箭头指针**：深色箭头 + 白色描边 + 投影，浅色/深色页面上都清晰；箭尖精确落在
+  真实鼠标事件的坐标点上（22×22 SVG，随页面滚动/缩放自然跟随）。
+- **移动**：`click` / `type_text` 之前先用缓动曲线把指针从上一位置滑到目标（默认 300ms，
+  cubic ease-out），**动画真正走完才派发真实鼠标事件**，视觉与事件顺序严格一致。
+  第一次出现直接落位，不会从屏幕角落飞进来。
+- **点击反馈**：`click` 派发完 press/release 后，在点击点播放一圈靛蓝涟漪
+  （双击/三击会错开播放多个），箭头同时做一次“按下回弹”。
+- **不干扰页面**：覆盖层 `pointer-events:none !important`、`z-index:2147483647`，
+  因此不影响命中测试（`elementFromPoint` 看不到它）、不影响布局、也不会被快照收录；
+  它失败（CSP、正在导航）只记日志，绝不让点击失败。
+
+可观测性：`click` / `type_text` 的返回值带 `cursor: true` 与目标坐标 `x`/`y`；
+`page` 不可见（后台标签页/被其他窗口完全遮挡）时 Chrome 会暂停 `requestAnimationFrame`，
+此时指针**直接落位**（不播动画）——这是刻意的：动画只是装饰，绝不能把一次点击卡到超时。
+
+配置：`CHROME_CURSOR=0` 完全关闭；`CHROME_CURSOR_MS=0` 保留指针但瞬间落位（默认 300ms）。
+调试用页面在 `test/fixtures/ghost-cursor-demo.html`（用 `open_page` 打开，再 `snapshot` +
+`click` 即可看到效果）。
 
 ---
 
@@ -232,6 +257,8 @@ broker 的 IPC 端点默认是**每用户命名管道**（非 Windows 为 Unix s
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome`（非 9333 端口追加 `-<port>`） | `launch` 使用的隔离 profile |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 |
 | `CHROME_WINDOW_MODE` | `maximized` | `launch` 后的窗口形态：`maximized` / `fullscreen` / `default` |
+| `CHROME_CURSOR` | 开启 | 是否绘制模拟鼠标（幽灵光标）；`0`/`off`/`false`/`no` 关闭 |
+| `CHROME_CURSOR_MS` | `300` | 模拟鼠标移动到目标的动画时长（ms，0=瞬间落位，上限 2000） |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次发现工具的 settle 上限 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 调用结果默认等待 |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | `snapshot` 默认元素预算（工具参数 `maxElements` 可覆盖，上限 2000） |

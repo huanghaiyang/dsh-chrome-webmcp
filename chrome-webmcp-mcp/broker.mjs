@@ -24,6 +24,8 @@ import {
   BROKER_IDLE_MS,
   CDP_PORT,
   CHROME_LISTEN_WAIT_MS,
+  CURSOR_ENABLED,
+  CURSOR_MS,
   DISCOVERY_CONCURRENCY,
   ENDPOINT,
   INVOKE_WAIT_MS,
@@ -272,11 +274,14 @@ export async function runBroker(options = {}) {
   // TaskBook 维护任务 → 页面归属（持久化到 ownershipFile，broker 重启后可恢复）。
   const tasks = new TaskBook({ cdp, sessions, log, ownershipFile });
   // PageBook 承载浏览器操作：snapshot / click / type_text / press_key / navigate。
+  // cursor / cursorMs 控制页面里的"模拟鼠标"（视觉反馈，见 lib/ghost-cursor.mjs）。
   const pageBook = new PageBook({
     cdp,
     log,
     settleMs: Number(options.actionSettleMs ?? ACTION_SETTLE_MS),
     navigateWaitMs: Number(options.navigateWaitMs ?? NAVIGATE_WAIT_MS),
+    cursor: options.cursor ?? CURSOR_ENABLED,
+    cursorMs: Number(options.cursorMs ?? CURSOR_MS),
   });
 
   /** 已连接的客户端：client.id → {id, name, channel, handshaken, connectedAt}。 */

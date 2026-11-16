@@ -447,8 +447,9 @@ const TOOLS = [
     method: 'click',
     paramNames: ['taskId', 'targetId', 'url', 'index', 'button', 'clickCount', 'waitMs'],
     description:
-      'Act: click an element by its index from the latest snapshot. Scrolls it into view and ' +
-      'sends real mouse events, so hover menus, links, and framework handlers behave normally. ' +
+      'Act: click an element by its index from the latest snapshot. Scrolls it into view, ' +
+      'glides a visible simulated mouse cursor onto the target, then sends real mouse events ' +
+      'plus a click ripple, so hover menus, links, and framework handlers behave normally. ' +
       'Call snapshot again afterwards to observe the result.',
     inputSchema: {
       type: 'object',
@@ -480,6 +481,7 @@ const TOOLS = [
     paramNames: ['taskId', 'targetId', 'url', 'index', 'text', 'clear', 'submit', 'waitMs'],
     description:
       'Act: focus a text field by snapshot index and insert text with real input events. ' +
+      'The simulated mouse cursor parks on the field so the focus is visible. ' +
       'Existing content is replaced by default; set clear:false to append at the caret. On a ' +
       '<select>, chooses the option whose value or label matches text. Set submit:true to ' +
       'press Enter afterwards. Call snapshot again to observe the result.',

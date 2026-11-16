@@ -313,6 +313,64 @@ test('browser-use: click sends real mouse events at the reported coordinates', {
   assert.equal(events[1].y, 24);
 });
 
+test('browser-use: click moves the visible ghost cursor before the real mouse events', { timeout: TEST_TIMEOUT }, async () => {
+  const cursorFrom = fake.stats.cursor.length;
+  const mouseFrom = fake.stats.input.mouse.length;
+  const clicked = await clientA.call('click', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+    index: 0,
+  });
+  assert.equal(clicked.cursor, true, 'the ghost cursor is on by default');
+
+  const cursor = fake.stats.cursor
+    .slice(cursorFrom)
+    .filter((event) => event.targetId === browserTarget);
+  assert.deepEqual(
+    cursor.map((event) => event.kind),
+    ['move', 'tap'],
+    'one move before the click and one ripple after it',
+  );
+  assert.equal(cursor[0].x, 42, 'the cursor must move to the reported click point');
+  assert.equal(cursor[0].y, 24);
+
+  const events = fake.stats.input.mouse
+    .slice(mouseFrom)
+    .filter((event) => event.targetId === browserTarget);
+  assert.ok(events.length > 0, 'the real mouse events must still be dispatched');
+  assert.ok(
+    cursor[0].seq < events[0].seq,
+    'the pointer must arrive before mouseMoved/mousePressed are dispatched',
+  );
+  assert.ok(
+    cursor[1].seq > events[events.length - 1].seq,
+    'the click ripple must play after mousePressed/mouseReleased',
+  );
+});
+
+test('browser-use: type_text parks the ghost cursor on the focused field', { timeout: TEST_TIMEOUT }, async () => {
+  const cursorFrom = fake.stats.cursor.length;
+  const typed = await clientA.call('type_text', {
+    taskId: BROWSER_TASK,
+    targetId: browserTarget,
+    index: 1,
+    text: 'Ada',
+  });
+  assert.equal(typed.mode, 'typed');
+  assert.equal(typed.x, 120, 'the action result exposes the field centre');
+  assert.equal(typed.y, 48);
+  const cursor = fake.stats.cursor
+    .slice(cursorFrom)
+    .filter((event) => event.targetId === browserTarget);
+  assert.deepEqual(
+    cursor.map((event) => event.kind),
+    ['move'],
+    'typing moves the pointer onto the field but never clicks',
+  );
+  assert.equal(cursor[0].x, 120);
+  assert.equal(cursor[0].y, 48);
+});
+
 test('browser-use: type_text clears, inserts, and submits with Enter', { timeout: TEST_TIMEOUT }, async () => {
   const textBefore = fake.stats.input.text.length;
   const keysBefore = fake.stats.input.keys.length;

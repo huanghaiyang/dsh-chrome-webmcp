@@ -11,6 +11,9 @@
  * - 提供 snapshot / click / typeText / pressKey / navigate / targetFacts 等原语；
  *   动作一律通过真实 CDP Input 事件（Input.dispatchMouseEvent / dispatchKeyEvent /
  *   insertText）发出，让页面框架（React、Vue 等）像对待真人输入一样响应。
+ * - click / typeText 在派发真实事件前会把"幽灵光标"（lib/ghost-cursor.mjs）移到目标
+ *   坐标、点击后播放涟漪：CDP 事件不会移动系统指针，这一层让调试时能看见"鼠标在动"。
+ *   它是纯装饰，失败只记日志，绝不影响动作成功与否。
  *
  * 关键不变量：
  * - 快照索引单调递增且跨快照不复用：每张快照都会递增 revision 并重建 refs 表，
@@ -28,10 +31,13 @@ import { CdpError } from './cdp.mjs';
 import {
   ACTION_SETTLE_MS,
   CDP_TIMEOUT_MS,
+  CURSOR_ENABLED,
+  CURSOR_MS,
   MAX_TOOL_WAIT_MS,
   NAVIGATE_WAIT_MS,
   sleep,
 } from './config.mjs';
+import { cursorMoveExpression, cursorTapExpression } from './ghost-cursor.mjs';
 import {
   clickExpression,
   readyExpression,
@@ -232,17 +238,23 @@ export class PageBook {
    * @param {Function} [options.log] 日志函数。
    * @param {number} [options.settleMs] 动作后的默认静置时间（默认取 ACTION_SETTLE_MS）。
    * @param {number} [options.navigateWaitMs] 导航后默认等待加载的时间（默认取 NAVIGATE_WAIT_MS）。
+   * @param {boolean} [options.cursor] 是否绘制"模拟鼠标"（默认取 CURSOR_ENABLED）。
+   * @param {number} [options.cursorMs] 光标移动到目标的动画时长（默认取 CURSOR_MS）。
    */
   constructor({
     cdp,
     log = () => {},
     settleMs = ACTION_SETTLE_MS,
     navigateWaitMs = NAVIGATE_WAIT_MS,
+    cursor = CURSOR_ENABLED,
+    cursorMs = CURSOR_MS,
   }) {
     this.cdp = cdp;
     this.log = log;
     this.settleMs = settleMs;
     this.navigateWaitMs = navigateWaitMs;
+    this.cursor = cursor !== false;
+    this.cursorMs = Number.isFinite(Number(cursorMs)) && Number(cursorMs) >= 0 ? Number(cursorMs) : CURSOR_MS;
     this.sessions = new Map(); // targetId -> {targetId, sessionId, frameId, contextId}
     this.bySession = new Map(); // sessionId -> targetId（用于把 detach 事件反查回页面）
     this.ensuring = new Map(); // targetId -> Promise（attach 单飞锁）
@@ -521,21 +533,71 @@ export class PageBook {
   }
 
   /**
+   * 把"模拟鼠标"移动到视口坐标（纯视觉，失败不抛错）。
+   *
+   * 动画时长由 cursorMs 决定；0 表示瞬间落位（仍会画出光标）。之所以要**等待**这次
+   * evaluate 返回，是为了让"光标到位"发生在真实鼠标事件之前，视觉与事件顺序一致。
+   *
+   * @param {string} targetId 页面 targetId。
+   * @param {number} x 视口 x 坐标（CSS 像素）。
+   * @param {number} y 视口 y 坐标。
+   * @param {string} [clientId] 客户端标识。
+   * @returns {Promise<void>} 无论成功失败都 resolve；失败只记日志。
+   */
+  async #cursorMove(targetId, x, y, clientId) {
+    if (!this.cursor) return;
+    if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return;
+    try {
+      await this.evaluate(targetId, cursorMoveExpression({ x, y, durationMs: this.cursorMs }), {
+        clientId,
+      });
+    } catch (error) {
+      // 光标是装饰：页面拒绝注入（CSP/沙箱/正在导航）都不能影响真正的点击。
+      this.log('[pages] ghost cursor move skipped', error?.code || '', error?.message || String(error));
+    }
+  }
+
+  /**
+   * 在点击点播放涟漪与按下反馈（纯视觉，失败不抛错）。
+   *
+   * 表达式立即返回，动画在页面里自行播完，因此不会给点击增加延迟。
+   *
+   * @param {string} targetId 页面 targetId。
+   * @param {number} x 视口 x 坐标。
+   * @param {number} y 视口 y 坐标。
+   * @param {number} count 点击次数（多击播放多个涟漪）。
+   * @param {string} [clientId] 客户端标识。
+   * @returns {Promise<void>} 无论成功失败都 resolve；失败只记日志。
+   */
+  async #cursorTap(targetId, x, y, count, clientId) {
+    if (!this.cursor) return;
+    if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return;
+    try {
+      await this.evaluate(targetId, cursorTapExpression({ x, y, count }), { clientId });
+    } catch (error) {
+      this.log('[pages] ghost cursor tap skipped', error?.code || '', error?.message || String(error));
+    }
+  }
+
+  /**
    * 点击快照索引对应的元素。
    *
    * 流程：先在页面内解析索引 -> 滚动到视口中心 -> 等待两帧 -> 命中测试，得到视口
-   * 坐标；再通过真实 CDP 鼠标事件点击。真实事件而非 el.click()，是为了让框架的
-   * 事件委托、pointerdown/up 与用户手势判定都按真人操作处理。
+   * 坐标；再由"模拟鼠标"移动到该点（视觉），然后通过真实 CDP 鼠标事件点击，最后
+   * 在点击点播放涟漪。真实事件而非 el.click()，是为了让框架的事件委托、
+   * pointerdown/up 与用户手势判定都按真人操作处理。
    *
    * @param {string} targetId 页面 targetId。
    * @param {{index: number, button?: 'left'|'right'|'middle', clickCount?: number, clientId?: string}} options
-   * @returns {Promise<{index: number, tag: string, label: string, x: number, y: number, button: string, clickCount: number}>}
+   * @returns {Promise<{index: number, tag: string, label: string, x: number, y: number, button: string, clickCount: number, cursor: boolean}>}
    * @throws {CdpError} REF_NOT_FOUND / REF_STALE / ELEMENT_NOT_VISIBLE / ELEMENT_COVERED
    *   （由 actionError 映射）；以及 evaluate/#send 透传的错误。
    */
   async click(targetId, { index, button = 'left', clickCount = 1, clientId } = {}) {
     const point = await this.evaluate(targetId, clickExpression({ index }), { clientId });
     if (!point?.ok) throw actionError(point, targetId);
+    // 先把模拟鼠标移过去：拖动视觉与随后的真实事件对齐。
+    await this.#cursorMove(targetId, point.x, point.y, clientId);
     const session = await this.#ensure(targetId, clientId);
     // CDP 的 buttons 位掩码：1=左键按下，2=右键，4=中键。
     const mask = button === 'right' ? 2 : button === 'middle' ? 4 : 1;
@@ -575,6 +637,8 @@ export class PageBook {
         clientId,
       );
     }
+    // 真实事件已经发出，再在点击点播放涟漪/按下反馈（动画在页面里自行播完）。
+    await this.#cursorTap(targetId, point.x, point.y, clickCount, clientId);
     return {
       index,
       tag: point.tag,
@@ -584,6 +648,7 @@ export class PageBook {
       y: Math.round(point.y * 100) / 100,
       button,
       clickCount,
+      cursor: this.cursor,
     };
   }
 
@@ -597,8 +662,9 @@ export class PageBook {
    * @param {string} targetId 页面 targetId。
    * @param {{index: number, text: string, clear?: boolean, submit?: boolean, clientId?: string}} options
    *   clear=true 时先全选再输入（覆盖原值）；submit=true 时输入后按 Enter。
-   * @returns {Promise<object>} mode='selected' 时为 {index, mode, value, label}；
-   *   mode='typed' 时为 {index, mode, tag, label, text, cleared, submitted}。
+   * @returns {Promise<object>} mode='selected' 时为 {index, mode, value, label, x, y}；
+   *   mode='typed' 时为 {index, mode, tag, label, text, cleared, submitted, x, y}。
+   *   x/y 为字段中心的视口坐标（模拟光标落点）；cursor 表示是否启用了模拟鼠标。
    * @throws {CdpError} REF_NOT_FOUND / REF_STALE / NOT_EDITABLE / OPTION_NOT_FOUND
    *   （由 actionError 映射），以及输入阶段的 CDP 错误。
    */
@@ -612,9 +678,19 @@ export class PageBook {
       { clientId },
     );
     if (!result?.ok) throw actionError(result, targetId);
+    // 让模拟鼠标落到被聚焦的字段上：输入没有鼠标事件，但视觉上应停在字段处。
+    await this.#cursorMove(targetId, result.x, result.y, clientId);
     // select 在页面脚本内已直接选中并派发事件，无需也不应再走键盘输入。
     if (result.mode === 'selected') {
-      return { index, mode: 'selected', value: result.value, label: result.label };
+      return {
+        index,
+        mode: 'selected',
+        value: result.value,
+        label: result.label,
+        x: result.x,
+        y: result.y,
+        cursor: this.cursor,
+      };
     }
     if (clear) {
       // 用平台对应的"全选"组合键，随后 insertText 会替换整个选区。
@@ -633,6 +709,9 @@ export class PageBook {
       text,
       cleared: clear === true,
       submitted: submit === true,
+      x: result.x,
+      y: result.y,
+      cursor: this.cursor,
     };
   }
 

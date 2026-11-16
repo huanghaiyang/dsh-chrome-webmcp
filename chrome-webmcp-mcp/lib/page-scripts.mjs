@@ -6,6 +6,8 @@
  *   ready（导航后就绪轮询）。脚本本身保持 ES5 风格（var/function），以兼容旧引擎。
  * - snapshot 把可见且可交互的元素序列化为 `[12]<button type="submit">Sign in</button>`
  *   这样的紧凑文本，同时把真实元素引用登记到索引表，供后续动作按索引寻址。
+ * - 另外两段"幽灵光标"脚本（模拟鼠标的移动/点击视觉反馈）在 lib/ghost-cursor.mjs，
+ *   但它们的识别标记同样登记在本文件的 MARKERS 里，保持"注入脚本标记"只有一个来源。
  *
  * 关键不变量：
  * - 所有脚本都在 lib/pages.mjs 创建的 isolated world 中执行，因此引用表只存在于
@@ -36,6 +38,9 @@ export const MARKERS = {
   click: '/*__DSH_BROWSER_CLICK__*/',
   type: '/*__DSH_BROWSER_TYPE__*/',
   ready: '/*__DSH_BROWSER_READY__*/',
+  // 幽灵光标（模拟鼠标）由 lib/ghost-cursor.mjs 生成，标记集中在这里，测试只认这一份。
+  cursorMove: '/*__DSH_GHOST_CURSOR_MOVE__*/',
+  cursorTap: '/*__DSH_GHOST_CURSOR_TAP__*/',
 };
 
 /**
@@ -617,8 +622,9 @@ export function clickExpression({ index }) {
  *   text 会经 JSON.stringify 转成字面量，因此引号、换行、反斜杠都能安全注入；
  *   clear 表示是否由上层先全选覆盖。
  * @returns {string} 立即执行的表达式（带 MARKERS.type 前缀）。
- *   select 分支解析为 {ok:true, mode:'selected', value, label}；
- *   文本分支为 {ok:true, mode:'typed', tag, label}；失败为 {ok:false, reason, detail, options?}。
+ *   select 分支解析为 {ok:true, mode:'selected', value, label, x, y}；
+ *   文本分支为 {ok:true, mode:'typed', tag, label, x, y}（x/y 为元素中心视口坐标）；
+ *   失败为 {ok:false, reason, detail, options?}。
  * @throws {RangeError} index 不是 0~INT32_MAX 之间的整数时抛出。
  */
 export function typeExpression({ index, text, clear = true }) {
@@ -689,7 +695,16 @@ export function typeExpression({ index, text, clear = true }) {
     // 手动派发 input/change 事件，让框架监听器正确感知值变化。
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { ok: true, mode: 'selected', value: el.value, label: optionLabel(match) };
+    // x/y：元素中心的视口坐标，供上层把"模拟鼠标"移到该下拉框上（纯视觉）。
+    var selectRect = el.getBoundingClientRect();
+    return {
+      ok: true,
+      mode: 'selected',
+      value: el.value,
+      label: optionLabel(match),
+      x: selectRect.left + selectRect.width / 2,
+      y: selectRect.top + selectRect.height / 2,
+    };
   }
   // ---------- 文本输入分支 ----------
   var editable = tag === 'input' || tag === 'textarea' || el.isContentEditable;
@@ -731,10 +746,14 @@ export function typeExpression({ index, text, clear = true }) {
       /* 光标定位属于尽力而为，失败不影响输入本身 */
     }
   }
+  // x/y：聚焦后的元素中心（视口坐标），供上层把"模拟鼠标"移到该输入框上（纯视觉）。
+  var inputRect = el.getBoundingClientRect();
   return {
     ok: true,
     mode: 'typed',
     tag: tag,
+    x: inputRect.left + inputRect.width / 2,
+    y: inputRect.top + inputRect.height / 2,
     label: String(el.getAttribute('aria-label') || el.getAttribute('placeholder') || '')
       .replace(/\\s+/g, ' ')
       .trim()

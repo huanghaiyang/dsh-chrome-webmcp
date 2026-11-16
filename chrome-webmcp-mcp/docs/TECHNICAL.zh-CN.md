@@ -323,6 +323,8 @@ plugin_manager set_bundle target=dsh-chrome-webmcp enabled=true    # 恢复
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome`（端口 9333）；其他端口为 `...-<port>` | `launch` 的隔离 profile | 不要指向日常 profile |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` 等端口上限 | 慢机器可调大 |
 | `CHROME_WINDOW_MODE` | `maximized` | `launch` 后的窗口形态：`maximized` / `fullscreen` / `default` | 想让调试窗口真全屏（隐藏浏览器 UI）用 `fullscreen`；不想被动改窗口用 `default` |
+| `CHROME_CURSOR` | 开启 | 是否在页面绘制模拟鼠标（幽灵光标） | `0`/`off`/`false` 关闭；纯视觉，关掉不影响点击本身 |
+| `CHROME_CURSOR_MS` | `300` | 模拟鼠标移动到目标的动画时长（ms） | `0` 瞬间落位；上限 2000 |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | 首次工具发现的 settle 上限 | 页面工具注册慢时调大 |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | 默认调用等待 | 长任务页面调大 |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | `snapshot` 默认元素预算（上限 2000） | 页面元素很多时调大；会增大返回文本 |
@@ -672,8 +674,9 @@ broker                                   Chrome
 | `lib/cdp.mjs` | 333 | CDP WebSocket、版本缓存、公平调度器、事件分发 |
 | `lib/sessions.mjs` | 341 | target attach、enable、注册表、settle、invoke waiter |
 | `lib/tasks.mjs` | 435 | task/页面归属、隔离 context、candidates、close/status |
-| `lib/pages.mjs` | 490 | 浏览器操作会话：attach、isolated world、evaluate、鼠标/键盘、导航 |
-| `lib/page-scripts.mjs` | 461 | 页面侧快照/点击/输入/ready 脚本（DOM 索引序列化） |
+| `lib/pages.mjs` | 490 | 浏览器操作会话：attach、isolated world、evaluate、鼠标/键盘、导航、幽灵光标挂载 |
+| `lib/page-scripts.mjs` | 461 | 页面侧快照/点击/输入/ready 脚本（DOM 索引序列化）+ 注入脚本 MARKERS |
+| `lib/ghost-cursor.mjs` | 250 | 模拟鼠标覆盖层：指针绘制、缓动移动（rAF）、点击涟漪 |
 | `broker.mjs` | 693 | broker 生命周期、IPC handler、launch、空闲退出 |
 | `bridge.mjs` | 901 | MCP stdio、12 工具、broker 生命周期客户端 |
 | `install.mjs` | 309 | 一键安装器 |
@@ -749,10 +752,12 @@ broker                                   Chrome
 - `evaluate()`：`Runtime.evaluate` 带 `contextId`、`returnByValue`、`awaitPromise`；
   检测 context 失效后单次重试，仍失败则 `PAGE_CONTEXT_LOST`。
 - `snapshot()`：执行快照脚本，返回 `{snapshotId,url,title,total,elements,truncated,text}`。
-- `click()`：执行点击脚本拿到坐标后，发 `mouseMoved` + `mousePressed`/`mouseReleased`；
-  支持 left/right/middle 与 1–3 次点击。
+- `click()`：执行点击脚本拿到坐标后，先把幽灵光标移到该点（视觉），再发 `mouseMoved` +
+  `mousePressed`/`mouseReleased`，最后在点击点播涟漪；支持 left/right/middle 与 1–3 次点击。
 - `typeText()`：执行输入脚本；`<select>` 直接返回 `selected`；文本输入先 `Control+A`
-  （macOS `Meta+A`），再 `Input.insertText`，可选 Enter。
+  （macOS `Meta+A`），再 `Input.insertText`，可选 Enter；输入前把幽灵光标停到字段中心。
+- `#cursorMove()` / `#cursorTap()`：包一层 try/catch 的装饰性调用，失败只记日志（CSP、
+  导航中），绝不影响真实动作；`cursor`/`cursorMs` 由构造参数注入（默认取环境变量）。
 - `pressKey()`：解析 `Enter/Tab/方向键/空格/字母数字` 与 `Alt/Ctrl/Meta/Shift` 组合，
   发 `rawKeyDown` + 可选 `char` + `keyUp`。
 - `navigate()`：失效旧 context → `Page.navigate` → 轮询 `readyState` 直到 `complete`。
@@ -760,7 +765,8 @@ broker                                   Chrome
 
 ### 10.9 `lib/page-scripts.mjs`
 
-- `MARKERS`：四个脚本开头的标记注释，fake CDP 测试据此识别脚本。
+- `MARKERS`：注入脚本开头的标记注释（snapshot/click/type/ready + 幽灵光标 move/tap），
+  fake CDP 测试据此识别脚本。
 - `snapshotExpression()`：遍历 document 与开放的 shadow root，过滤不可见元素，
   生成 `[index]<tag ...>label</tag>`；引用表保存在 isolated world 的非枚举
   `globalThis.__dshBrowserUse`，索引单调递增。
@@ -770,6 +776,20 @@ broker                                   Chrome
   `input`+`change`；文本字段校验可编辑性、聚焦、按 `clear` 决定是否全选。
 - `readyExpression()`：返回 `document.readyState`，供导航轮询。
 - 所有脚本都在 isolated world 中运行，不向页面添加属性、样式或全局变量。
+
+### 10.10 `lib/ghost-cursor.mjs`
+
+- 目标：让 `click` / `type_text` 有**看得见**的鼠标——CDP 事件不会移动系统指针。
+- `cursorMoveExpression({x,y,durationMs})`：确保覆盖层 `#__dsh_ghost_cursor__` 与
+  `<style>` 已注入，读取 `data-dsh-gc-x/y` 作为当前位置，用 rAF + easeOutCubic 逐帧写
+  `transform`；**动画结束才 resolve**，调用方据此再派发真实鼠标事件。首次出现直接落位；
+  `document.hidden` 或时长为 0 时立即落位；`setTimeout(DUR+80)` 兜底，保证一定收敛
+  （后台标签页 rAF 会被暂停）。
+- `cursorTapExpression({x,y,count})`：在点击点插入 `.dsh-gc-ring`（CSS `dsh-gc-ping`
+  扩撒淡出，多击错开 90ms），给根节点加 `.dsh-gc-pressed` 触发箭头回弹；立即返回。
+- 覆盖层样式：`position:fixed` + 零尺寸 + `translate3d` 承载位置（合成层动画），
+  `pointer-events:none !important`、`z-index:2147483647`、`contain:layout style`。
+- 状态只存 DOM（属性 + 内联样式），因此跨 evaluate / 跨 isolated world 都能续接上一次位置。
 
 ---
 

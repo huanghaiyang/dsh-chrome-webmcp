@@ -141,8 +141,8 @@ environments; the default never listens on a network port.
 | `list_tools` | `targetId?`, `url?`, `taskId?`, `waitMs?`, `refresh?` | WebMCP registry for the task's pages + unowned pages. |
 | `invoke_tool` | `toolName`, `input?`, `targetId?`, `url?`, `frameId?`, `taskId?`, `waitMs?` | Invoke a tool; `frameId` requires `targetId`. |
 | `snapshot` | `targetId?`, `url?`, `taskId?`, `maxElements?` | Perceive: visible interactive elements as a numbered `snapshot` text list. |
-| `click` | `index`, `targetId?`, `url?`, `taskId?`, `button?`, `clickCount?`, `waitMs?` | Act: real mouse click on a snapshot index. |
-| `type_text` | `index`, `text`, `targetId?`, `url?`, `taskId?`, `clear?`, `submit?`, `waitMs?` | Act: focus a field and insert text; on a `<select>`, choose the matching option. |
+| `click` | `index`, `targetId?`, `url?`, `taskId?`, `button?`, `clickCount?`, `waitMs?` | Act: glide the simulated mouse onto the element and send real mouse clicks (with a click ripple). |
+| `type_text` | `index`, `text`, `targetId?`, `url?`, `taskId?`, `clear?`, `submit?`, `waitMs?` | Act: park the simulated mouse on the field, focus it and insert text; on a `<select>`, choose the matching option. |
 | `press_key` | `key`, `targetId?`, `url?`, `taskId?`, `waitMs?` | Act: send `Enter`, `Tab`, arrows, or a combination such as `Control+A`. |
 | `navigate` | `url`, `targetId?`, `taskId?`, `waitMs?` | Act: navigate the existing tab and wait for `document.readyState === "complete"`. |
 | `open_page` | `url`, `taskId?`, `isolated?`, `waitMs?` | Open a task-owned page and return its tools. |
@@ -152,6 +152,30 @@ environments; the default never listens on a network port.
 
 Page-declared tool metadata is untrusted input: it is surfaced for reading and
 only executed when the agent explicitly calls `invoke_tool`.
+
+### Visible simulated mouse (ghost cursor)
+
+`Input.dispatchMouseEvent` delivers events to the renderer but never moves the OS
+pointer, so by default there is no on-screen hint of what the agent is doing. The bridge
+injects a **simulated mouse** (`lib/ghost-cursor.mjs`) into the page:
+
+- an arrow pointer (dark fill, white outline, drop shadow) whose tip sits exactly on the
+  coordinates of the real mouse events, drawn in a `position:fixed` overlay;
+- **travel**: before `click` / `type_text` the pointer eases from its previous position to
+  the target (300 ms cubic ease-out by default) and the real mouse events are dispatched
+  **only after the animation finished**, so what you see matches what the page receives;
+- **click feedback**: after press/release a ring ripples at the click point (one ring per
+  click for double/triple clicks) while the arrow does a short press-and-bounce;
+- **zero interference**: the overlay is `pointer-events:none !important` with the maximum
+  `z-index`, so hit-testing, layout and snapshots are unaffected; failures (CSP, navigating)
+  are logged and never fail the action.
+
+`click` / `type_text` return `cursor: true` plus the target `x`/`y`. When the page is not
+visible (background tab, or fully occluded window) Chrome pauses `requestAnimationFrame`,
+so the pointer jumps straight to the target instead of animating — deliberate: decoration
+must never stall a click. Configure with `CHROME_CURSOR=0` (off) or `CHROME_CURSOR_MS`
+(0 = instant, default 300). A demo page for manual checks lives at
+`test/fixtures/ghost-cursor-demo.html` (open it with `open_page`, then `snapshot` + `click`).
 
 ## Required Chrome flags
 
@@ -206,6 +230,8 @@ stay visible so you can still drive the browser by hand):
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` | Isolated profile used by `launch` (port suffix for non-9333) |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | `launch` port wait |
 | `CHROME_WINDOW_MODE` | `maximized` | Window mode after `launch`: `maximized` / `fullscreen` / `default` |
+| `CHROME_CURSOR` | on | Draw the simulated mouse (ghost cursor); `0`/`off`/`false`/`no` disables it |
+| `CHROME_CURSOR_MS` | `300` | Pointer travel animation in ms (0 = instant placement, cap 2000) |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle ceiling |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default invocation wait |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | Default `snapshot` element budget (tool override: `maxElements`, cap 2000) |

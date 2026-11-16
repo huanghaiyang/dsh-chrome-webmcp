@@ -134,6 +134,25 @@ export const ACTION_SETTLE_MS = positiveInt(process.env.CHROME_ACTION_SETTLE_MS,
 /** browser-use navigate 的默认加载等待（MCP 工具入参可覆盖）。 */
 export const NAVIGATE_WAIT_MS = positiveInt(process.env.CHROME_NAVIGATE_WAIT_MS, 10000);
 
+/**
+ * 是否在页面上绘制"模拟鼠标"（幽灵光标）：click/type_text 时可见的移动与点击涟漪。
+ *
+ * 默认开启——CDP 的鼠标事件不会移动系统真实指针，没有这一层的话，调试/演示时
+ * 完全看不出 Agent 点到了哪里。设 `CHROME_CURSOR=0`（或 off/false/no）可关闭。
+ */
+export const CURSOR_ENABLED = !/^(0|off|false|no|disabled)$/i.test(
+  String(process.env.CHROME_CURSOR || '').trim(),
+);
+/**
+ * 模拟鼠标移动到目标的动画时长（毫秒）；0 表示瞬间落位（仍然会绘制光标）。
+ * 上界 2000ms；默认 300ms 接近真人指针的移动观感，又不会明显拖慢连续点击。
+ */
+export const CURSOR_MS = (() => {
+  const n = Number(process.env.CHROME_CURSOR_MS);
+  if (!Number.isFinite(n) || n < 0) return 300;
+  return Math.min(Math.floor(n), 2000);
+})();
+
 /** broker 在没有客户端连接时，空闲这么久后退出；Chrome 本身保持运行。 */
 export const BROKER_IDLE_MS = positiveInt(process.env.CHROME_WEBMCP_BROKER_IDLE_MS, 600000);
 /** 等待 broker 完成启动（监听 IPC）的最长时间。 */
@@ -237,7 +256,7 @@ export const BRIDGE_ENTRY = path.join(BRIDGE_DIR, 'bridge.mjs');
 /**
  * 汇总当前生效的关键配置，用于日志与诊断输出。
  *
- * @returns {{version: string, port: number, endpoint: string, ipc: string, stateDir: string, ownershipFile: string, userDataDir: string, windowMode: string}} 配置快照。
+ * @returns {{version: string, port: number, endpoint: string, ipc: string, stateDir: string, ownershipFile: string, userDataDir: string, windowMode: string, cursor: boolean, cursorMs: number}} 配置快照。
  */
 export function describeConfig() {
   return {
@@ -249,5 +268,7 @@ export function describeConfig() {
     ownershipFile: OWNERSHIP_FILE,
     userDataDir: USER_DATA_DIR,
     windowMode: WINDOW_MODE,
+    cursor: CURSOR_ENABLED,
+    cursorMs: CURSOR_MS,
   };
 }

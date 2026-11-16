@@ -130,6 +130,8 @@ environment. Defaults come from `lib/config.mjs`.
 | `CHROME_USER_DATA_DIR` | `%LOCALAPPDATA%\dsh-webmcp-chrome` (port suffix for non-9333) | Isolated Chrome profile used by `launch` |
 | `CHROME_LISTEN_WAIT_MS` | `25000` | How long `launch` waits for the DevTools port |
 | `CHROME_WINDOW_MODE` | `maximized` | Window mode after `launch`: `maximized` (fills the screen) / `fullscreen` / `default` |
+| `CHROME_CURSOR` | on | Draw the simulated mouse (ghost cursor) during `click` / `type_text`; `0`/`off` disables |
+| `CHROME_CURSOR_MS` | `300` | Pointer travel animation in ms (0 = instant placement, cap 2000) |
 | `CHROME_TOOL_SETTLE_MS` | `1200` | First-discovery settle window for `toolsAdded` |
 | `CHROME_INVOKE_WAIT_MS` | `20000` | Default `invoke_tool` wait |
 | `CHROME_SNAPSHOT_MAX_ELEMENTS` | `200` | Default `snapshot` element budget (cap 2000) |
